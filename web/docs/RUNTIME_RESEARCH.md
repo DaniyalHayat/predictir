@@ -21,7 +21,7 @@ The actual multiplex SSE test used eight streams, twelve synthetic tickers and 1
 
 ## Realtime protocol and cost
 
-`GET /api/portfolio/stream?tickers=A,B` accepts at most twelve distinct public tickers and uses one visitor stream slot. `book` events contain the observed book and ticker; `status` events contain ticker and transport status. The existing single-contract stream keeps its original framing. Both use the same authenticated, geographically restricted proxy.
+`GET /api/portfolio/stream?tickers=A,B` accepts at most twelve distinct public tickers and uses one visitor stream slot. `book` events contain the observed book and ticker; `status` events contain ticker and transport status. Both stream views respect `Retry-After`, share a reconnect cooldown and cancel when closed. A stream-capacity limit leaves REST quote snapshots available. Both use the same authenticated, geographically restricted proxy.
 
 One native Kalshi WebSocket supplies the shared server replica. Subscription control acknowledgements participate in sequence checking. A ticker removal sends `delete_markets` after the subscription ID is known, and cannot close another ticker's subscribers. Late messages from removed markets advance subscription sequence without rebuilding abandoned books. Concurrent credential failures clean every listener. Quotes are coalesced every 100 ms and materialized once per shared ticker.
 

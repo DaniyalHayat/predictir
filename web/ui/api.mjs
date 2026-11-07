@@ -1,6 +1,8 @@
 import {createBrowserApi} from '../lib/browser-api.mjs';
+import {createBrowserStreams} from '../lib/browser-stream.mjs';
 export const API_BASE=(process.env.NEXT_PUBLIC_MARKET_API_BASE||'').replace(/\/$/,'');
 export const api=createBrowserApi({base:API_BASE});
+export const openEventStream=createBrowserStreams({base:API_BASE,api});
 export const dollars=value=>Number.isFinite(value)?value.toLocaleString('en-US',{style:'currency',currency:'USD'}):'—';
 export const cents=value=>Number.isFinite(value)?`${(value*100).toFixed(2).replace(/\.00$/,'')}¢`:'—';
 export const percent=value=>Number.isFinite(value)?`${(value*100).toFixed(1)}%`:'—';

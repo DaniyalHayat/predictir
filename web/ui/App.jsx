@@ -3,7 +3,7 @@ import {memo,useCallback,useEffect,useMemo,useReducer,useRef,useState} from 'rea
 import dynamic from 'next/dynamic';
 import {Activity,ArrowLeft,ArrowUpRight,Bitcoin,BookOpen,Check,ChevronDown,CloudSun,Database,ExternalLink,FlaskConical,
   Leaf,Loader2,MessageSquare,Music2,Plane,RefreshCw,Search,Trophy,Landmark,X,Palette,ChartNoAxesCombined,Wallet,LayoutDashboard,UserRound,Bookmark} from 'lucide-react';
-import {api,API_BASE,cents,count,dollars,percent,dateLabel} from './api.mjs';
+import {api,openEventStream,cents,count,dollars,percent,dateLabel} from './api.mjs';
 import {initialSelection,selectionReducer,contractTitle,refreshMarketRows} from './selection';
 import Chart from './Chart';
 import QuoteComparison from './QuoteComparison';
@@ -246,12 +246,12 @@ export default function App({paperWorkspace=false}={}) {
     const controller=new AbortController();
     const receive=value=>{if(!stopped)dispatch({type:'book',ticker,generation,value});};
     const refresh=()=>{if(!document.hidden&&!stopped&&(!stream||Date.now()-lastPoll>45000))api('/api/book?ticker='+encodeURIComponent(ticker)+'&contracts=1',{signal:controller.signal}).then(value=>{receive({...value,transport:'public-rest-snapshot'});if(!stream)setStreamStatus('REST snapshot');}).catch(e=>{if(e.name!=='AbortError'&&!stopped)setStreamStatus('Quote unavailable');});};
-    function connect(){if(stopped||document.hidden||stream)return;stream=new EventSource(API_BASE+'/api/stream?ticker='+encodeURIComponent(ticker));
+    function connect(){if(stopped||document.hidden||stream)return;stream=openEventStream('/api/stream?ticker='+encodeURIComponent(ticker));
       stream.onmessage=event=>{try{const value=JSON.parse(event.data),polled=value.transport==='public-rest-poll';
         if(value.kind==='quote'){if(polled)lastPoll=Date.parse(value.as_of);receive(value);setStreamStatus(polled?'Public quote polling':'Live stream');retries=0;}
         else if(value.kind==='connection')setStreamStatus(polled&&value.status==='backoff'?'Public polling paused':value.status==='connected'?'Live stream':value.status);
       }catch{setStreamStatus('Stream response unavailable');}};
-      stream.onerror=()=>{stream?.close();stream=null;if(!stopped){setStreamStatus('Stream reconnecting');retryTimer=setTimeout(connect,Math.min(30000,3000*(1+Math.random()*.2)*2**Math.min(retries++,4)));}};
+      stream.onerror=error=>{stream?.close();stream=null;if(!stopped){setStreamStatus('Stream reconnecting');retryTimer=setTimeout(connect,Math.max(error.retryAfterMs||0,Math.min(30000,3000*(1+Math.random()*.2)*2**Math.min(retries++,4))));}};
     }
     refresh();connect();const interval=setInterval(refresh,30000);
     const visible=()=>{if(document.hidden){stream?.close();stream=null;clearTimeout(retryTimer);}else{refresh();connect();}};

@@ -2,7 +2,7 @@ import {DataResponseError,fetchJSON} from './transport.mjs';
 
 export function createBrowserApi({base='',fetcher=fetchJSON,now=Date.now}={}){
   let resumeAt=0;
-  return async function api(path,options={}){
+  async function api(path,options={}){
     if(options.signal?.aborted)throw options.signal.reason;
     const remaining=resumeAt-now();
     if(remaining>0)throw new DataResponseError(`Site protection paused requests. Try again in ${Math.ceil(remaining/1000)} seconds.`,
@@ -12,5 +12,8 @@ export function createBrowserApi({base='',fetcher=fetchJSON,now=Date.now}={}){
       if(error.code==='EDGE_RATE_LIMITED')resumeAt=Math.max(resumeAt,now()+Math.max(1000,Math.min(300000,error.retryAfterMs||15000)));
       throw error;
     }
-  };
+  }
+  api.cooldownRemaining=()=>Math.max(0,resumeAt-now());
+  api.pauseFor=milliseconds=>{resumeAt=Math.max(resumeAt,now()+Math.max(1000,Math.min(300000,milliseconds||15000)));};
+  return api;
 }

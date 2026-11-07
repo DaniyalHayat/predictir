@@ -4,6 +4,11 @@ export class DataResponseError extends Error {
   }
 }
 
+export function retryAfterMilliseconds(header,{now=Date.now(),fallback=15000,maximum=300000}={}){
+  const seconds=header===null||header===undefined?NaN:Number(header),wait=Number.isFinite(seconds)?seconds*1000:Date.parse(header||'')-now;
+  return Number.isFinite(wait)?Math.max(1000,Math.min(maximum,wait)):fallback;
+}
+
 export async function readJSON(response, {source = 'Data service', maximumBytes = 12_000_000} = {}) {
   const declared = Number(response.headers.get('content-length') || 0);
   if (declared > maximumBytes) { await response.body?.cancel(); throw new DataResponseError(`${source} returned too much data`, {code: 'RESPONSE_TOO_LARGE'}); }
@@ -25,9 +30,7 @@ export async function readJSON(response, {source = 'Data service', maximumBytes 
   const contentType = response.headers.get('content-type') || '';
   if (/^\s*</.test(text) || /text\/html/i.test(contentType)) {
     if(response.status===429){
-      const retry=response.headers.get('retry-after'),seconds=retry===null?NaN:Number(retry);
-      const wait=Number.isFinite(seconds)?seconds*1000:Date.parse(retry)-Date.now();
-      const retryAfterMs=Number.isFinite(wait)?Math.max(1000,Math.min(300000,wait)):15000;
+      const retryAfterMs=retryAfterMilliseconds(response.headers.get('retry-after'));
       throw new DataResponseError(`Site protection paused requests. Try again in ${Math.ceil(retryAfterMs/1000)} seconds.`,
         {code:'EDGE_RATE_LIMITED',status:429,url:response.url,retryAfterMs});
     }
