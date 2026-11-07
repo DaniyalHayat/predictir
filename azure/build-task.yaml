@@ -1,0 +1,31 @@
+version: v1.1.0
+steps:
+  - id: backend
+    build: >-
+      --platform linux/amd64 --target backend
+      --label org.opencontainers.image.revision={{.Values.revision}}
+      --tag {{.Run.Registry}}/predictir-backend:{{.Values.tag}}
+      --file Dockerfile.azure .
+    env: [DOCKER_BUILDKIT=1]
+    timeout: 1200
+  - id: frontend
+    build: >-
+      --platform linux/amd64 --target front
+      --build-arg PREDICTIR_BUILD_MODE=live
+      --label org.opencontainers.image.revision={{.Values.revision}}
+      --tag {{.Run.Registry}}/predictir-live-front:{{.Values.tag}}
+      --file Dockerfile.azure .
+    env: [DOCKER_BUILDKIT=1]
+    timeout: 1200
+  - cmd: >-
+      {{.Run.Registry}}/predictir-backend:{{.Values.tag}}
+      -e "const a=require('node:assert/strict'),f=require('node:fs');a.equal(process.getuid(),65532);for(const p of ['/bin/sh','/usr/local/bin/npm','/usr/lib/libz.so.1','/usr/lib/x86_64-linux-gnu/libz.so.1'])a.equal(f.existsSync(p),false,p);a.ok(f.existsSync('/etc/ssl/certs/ca-certificates.crt'));console.log('Backend runtime verified')"
+    timeout: 60
+  - cmd: >-
+      {{.Run.Registry}}/predictir-live-front:{{.Values.tag}}
+      -e "const a=require('node:assert/strict'),f=require('node:fs');a.equal(process.getuid(),65532);for(const p of ['/bin/sh','/usr/local/bin/npm','/usr/lib/libz.so.1','/usr/lib/x86_64-linux-gnu/libz.so.1','/app/public/research/research-audit.pdf'])a.equal(f.existsSync(p),false,p);a.ok(f.existsSync('/etc/ssl/certs/ca-certificates.crt'));a.equal(f.readFileSync('/app/.predictir-edition','utf8').trim(),'live');a.ok(f.existsSync('/app/server.js'));console.log('Frontend runtime verified')"
+    timeout: 60
+  - push:
+      - '{{.Run.Registry}}/predictir-backend:{{.Values.tag}}'
+      - '{{.Run.Registry}}/predictir-live-front:{{.Values.tag}}'
+    timeout: 600

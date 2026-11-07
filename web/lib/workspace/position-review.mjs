@@ -2,6 +2,7 @@ import {book,marketDetails,trades,validateTicker} from '../live.mjs';
 import {contractHistory,recentPositionIdeas,workspaceEvidence,workspaceResearch} from './router.mjs';
 import {evaluatePaperPosition} from './positions.mjs';
 import {WORKSPACE_CATEGORIES} from './catalog.mjs';
+import {measurementEvidenceMatch} from './source-ranking.mjs';
 
 export const POSITION_REVIEW_BUDGET_MS=6200;
 const sourceTasks=new Map(),maxConcurrentReviews=4;
@@ -91,7 +92,7 @@ function links(rows){
   return [...unique.values()].slice(0,8);
 }
 
-function decisionSections(input,{evaluation,action,book,history,flow,news,feedback,reason,now}){
+function decisionSections(input,{evaluation,action,book,history,flow,news,market,feedback,reason,now}){
   const p=evaluation,sections=[];
   const label=input.side.toUpperCase();
   if(p.settlement.confirmed){
@@ -135,7 +136,7 @@ function decisionSections(input,{evaluation,action,book,history,flow,news,feedba
   sections.push({heading:'Price movement and order flow',text:quoteText+flowText+(changes?
     'The one-minute quote model projects '+(move===0?'no midpoint change':counts.format(Math.abs(move))+'¢ '+(move>0?'higher':'lower'))+' in the YES midpoint. This measures possible quote movement and cannot tell you who wins at settlement.':
     'Recent quote history did not support a current price-path estimate.')});
-  const reports=[...(news?.items||[]),...(news?.related_items||[])].filter(row=>row.title&&row.url).slice(0,3);
+  const reports=[...(news?.items||[]),...(news?.related_items||[])].filter(row=>row.title&&row.url&&measurementEvidenceMatch(market||{ticker:input.ticker},row.title,row.excerpt,row.publisher_url||row.url).accepted).slice(0,3);
   sections.push({heading:'Reporting and the next thing to watch',text:reports.length?
     reports.map(row=>String(row.publisher||'Public source').slice(0,70)+': '+String(row.title).slice(0,175)).join(' • ')+
       ' Read the source dates and check whether the report changes the exact settlement condition or the independent forecast. Related reporting is context.':
@@ -171,7 +172,7 @@ export async function reviewPaperPosition(raw,{signal,deadlineMs=POSITION_REVIEW
   if(!packet)reason='All scan slots are busy. Try again shortly.';
   const flow=summarizePositionFlow(tradeInfo,input.ticker,at);
   const feedback=model?.forecast?.availability_feedback;
-  const {sections,reports}=decisionSections(input,{evaluation,action,book:bookInfo,history,flow,news,feedback,reason,now:at});
+  const {sections,reports}=decisionSections(input,{evaluation,action,book:bookInfo,history,flow,news,market,feedback,reason,now:at});
   const sources=links([{label:'Kalshi settlement rules',url:marketInfo?.source_url,retrieved_at:marketInfo?.as_of},
     {label:'Kalshi bid depth',url:bookInfo?.source_url,retrieved_at:bookInfo?.as_of},
     {label:'Kalshi public trades',url:tradeInfo?.source_url,retrieved_at:tradeInfo?.as_of},

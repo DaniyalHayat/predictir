@@ -11,10 +11,11 @@ export function linkParts(line){
   });
 }
 
-export function answerSections(text){
+export function answerSections(text,{contractTitle}={}){
   const sections=[],sources=new Map();
+  const lines=text.split('\n');
   let current={title:'The short answer',lines:[]};
-  for(const raw of text.split('\n')){
+  for(const [index,raw] of lines.entries()){
     const line=raw.trim();
     if(!line)continue;
     if(sourceLine.test(line)){
@@ -28,7 +29,7 @@ export function answerSections(text){
     if(line.startsWith('## ')){
       if(current.lines.length)sections.push(current);
       current={title:line.slice(3),lines:[]};
-    }else if(!sections.length&&!current.lines.length&&contractLine.test(line)){
+    }else if(!sections.length&&!current.lines.length&&(contractLine.test(line)||line===contractTitle&&lines.slice(index+1).find(row=>row.trim())?.trim().startsWith('## '))){
       continue;
     }else{
       current.lines.push(line);

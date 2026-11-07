@@ -3,7 +3,7 @@ import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {cloudEnabled,store} from '../cloud/store.mjs';
 import {validateTicker} from '../live.mjs';
-import {safePublicURL,canonicalPublicURL,explicitlyHistorical,sportsEvidenceClaim} from './source-ranking.mjs';
+import {safePublicURL,canonicalPublicURL,explicitlyHistorical,measurementEvidenceMatch,sportsEvidenceClaim} from './source-ranking.mjs';
 export const EMBEDDING_MODEL=Object.freeze({id:'Xenova/all-MiniLM-L6-v2',revision:'751bff37182d3f1213fa05d7196b954e230abad9',dimensions:384,dtype:'q8',pooling:'mean',normalize:true,device:'cpu'});
 const hash=text=>createHash('sha256').update(text).digest('hex');
 const clean=(value,maximum)=>String(value||'').replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f]/g,' ').trim().slice(0,maximum);
@@ -57,6 +57,7 @@ export function publicEvidenceChunks(market,evidence,{now=Date.now()}={}){
   for(const item of [...(evidence.items||[]),...(evidence.related_items||[])]){
     if(rows.length>=32)break;
     if(['reddit','hacker_news'].includes(item.platform))continue;
+    if(!measurementEvidenceMatch(market,item.title,item.excerpt,item.publisher_url||item.url).accepted)continue;
     const scope=item.match_scope==='related'?'related_'+(item.source_tier||'public_metadata'):item.source_tier||'public_metadata';
     add(item.title,[item.title,item.excerpt].filter(Boolean).join('\n'),item.url,item.publisher,scope,item.time_basis==='provider_first_seen'?null:item.published_at||item.as_of,item.retrieved_at||evidence.as_of);
   }
@@ -220,6 +221,7 @@ export function createEvidenceRepository({storage=null,embed=embedPublicTexts,no
     }).catch(()=>({...emptyDense,status:'unavailable'})):emptyDense;
     const current=rows=>rows.filter(row=>{
       if(!publicURL(row.source_url)||explicitlyHistorical(row.title,row.source_url,now()))return false;
+      if(row.source_kind!=='public_contract_rules'&&!measurementEvidenceMatch({ticker},row.title,row.content,row.source_url).accepted)return false;
       if(!sportsGame)return true;
       if(row.source_kind==='public_contract_rules')return !availability;
       const claim=sportsEvidenceClaim(row.title,row.content,{exactFixture:!row.source_kind?.startsWith('related_')});

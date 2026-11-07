@@ -48,6 +48,18 @@ test('the scoped in-process MCP holds a losing lot using current net bids versus
   assert.equal(result.timings_ms.total,result.duration_ms);
 });
 
+test('position scan revalidates old headline context against the selected measured quantity',async()=>{
+  const {position,dependencies}=setup('KXRAIN-26NOV07-NYC');
+  dependencies.workspaceEvidence=async()=>({ticker:position.ticker,items:[
+    {title:'New York City Christmas tree arrives at Rockefeller Center',url:'https://publisher.test/tree'},
+    {title:'Central Park rain forecast updated by the NWS',url:'https://publisher.test/rain'}
+  ]});
+  const result=await reviewPaperPosition(position,{dependencies});
+  assert.doesNotMatch(JSON.stringify(result),/Christmas tree|publisher\.test\/tree/);
+  assert.ok(result.sources.some(row=>row.url==='https://publisher.test/rain'));
+  assert.match(result.sections.find(row=>row.heading==='Reporting and the next thing to watch').text,/Central Park rain/);
+});
+
 test('SELL requires a released interval below bids and filters recommendations by shared event',async()=>{
   const {position,dependencies}=setup('SELL-REVIEW',{p:.2,interval:[.1,.3]});
   const result=await reviewPaperPosition({...position,automatic:true},{dependencies});

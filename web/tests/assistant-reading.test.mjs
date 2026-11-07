@@ -19,3 +19,10 @@ test('partially streamed citations remain readable and unsafe URLs remain plain 
   assert.deepEqual(linkParts(unsafe),[{text:unsafe}]);
   assert.deepEqual(answerSections('Sources checked: '+incomplete).sections[0].lines,['Sources checked: '+incomplete]);
 });
+
+test('an exact contract-title preamble cannot hide the substantive answer in brief mode',()=>{
+  const content='Arizona wins\n\n## The short answer\nThe model prices a tie separately.\n\n## The price\nCompare both asks after fees.';
+  assert.deepEqual(answerSections(content,{contractTitle:'Arizona wins'}).sections[0],{title:'The short answer',lines:['The model prices a tie separately.']});
+  assert.deepEqual(answerSections('Arizona wins',{contractTitle:'Arizona wins'}).sections[0].lines,['Arizona wins']);
+  assert.deepEqual(answerSections('Arizona wins would cost 23 cents.\n\n## The price\nCompare fees.',{contractTitle:'Arizona wins'}).sections[0].lines,['Arizona wins would cost 23 cents.']);
+});

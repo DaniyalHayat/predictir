@@ -6,8 +6,8 @@ function Lines({lines}:{lines:string[]}){
     <a key={j} href={part.url} target="_blank" rel="noreferrer">{part.text}</a>:part.text)}</p>);
 }
 
-export function Answer({text,deep=false}:{text:string;deep?:boolean}){
-  const {sections,sources}=answerSections(text);
+export function Answer({text,deep=false,contractTitle}:{text:string;deep?:boolean;contractTitle?:string}){
+  const {sections,sources}=answerSections(text,{contractTitle});
   const [lead,...more]=sections;
   return <div className="answer">
     {lead&&<section className="answer-lead"><h3>{lead.title}</h3><Lines lines={lead.lines}/></section>}

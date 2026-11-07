@@ -33,7 +33,7 @@ await context.route('**/*',async route=>{
   const ticker=url.searchParams.get('ticker')||markets[0].ticker;
   const market=markets.find(row=>row.ticker===ticker)||markets[0];
   const json=value=>route.fulfill({json:value});
-  if(url.pathname==='/api/session')return json({kind:'guest',guest:{id:'browser-qa',issued_at:as_of,expires_at:close_time}});
+  if(url.pathname==='/api/session')return json({kind:'guest',guest:{id:'browser-qa',created_at:as_of,last_active_at:as_of,expires_at:close_time}});
   if(url.pathname==='/api/workspace/markets')return json({markets});
   if(url.pathname==='/api/workspace/context')return json({market,fees:{coefficient:.07}});
   if(url.pathname==='/api/workspace/history')return json({ticker,as_of,rows:[]});
@@ -190,6 +190,20 @@ try{
   assert.ok(inactive.height>=44,'Mobile view controls keep a 44px target');
   await mobile.getByRole('button',{name:'Close assistant'}).click();
   assert.equal(await mobileTrigger.evaluate(button=>document.activeElement===button),true);
+  await page.setViewportSize({width:1680,height:1050});
+  await page.getByRole('tab',{name:'Paper position',exact:true}).click();
+  await page.getByLabel('Paper contracts',{exact:true}).fill('1');
+  await page.getByRole('button',{name:'Record paper buy',exact:true}).click();
+  await page.locator('.paper-panel .notice.success').filter({hasText:'Recorded'}).waitFor();
+  const views=page.getByRole('navigation',{name:'Workspace views'});
+  await views.getByRole('button',{name:'My Trades',exact:true}).click();
+  await page.locator('[data-position-id]').first().waitFor();
+  await page.getByRole('navigation',{name:'Market categories'}).getByRole('button',{name:'Climate',exact:true}).click();
+  await page.getByRole('button',{name:'Open Alpha kickoff',exact:true}).waitFor();
+  await views.getByRole('button',{name:'My Trades',exact:true}).click();
+  await page.locator('.position-title').first().click();
+  await page.getByTestId('selected-ticker').filter({hasText:'KXTEST-BETA'}).waitFor();
+  await page.getByRole('navigation',{name:'Market categories'}).getByRole('button',{name:'Sports',exact:true}).getAttribute('aria-current').then(value=>assert.equal(value,'page'));
   assert.deepEqual(errors,[]);
   console.log('Browser assertions passed for scoped auto-submit, model and contract switches, retained news, paper privacy and submitted execution controls.');
 }catch(error){console.error(JSON.stringify({page_errors:errors,screen:page?(await page.locator('body').innerText()).slice(-3000):''}));throw error;}

@@ -4,6 +4,7 @@ The Azure deployment uses the shared app in [`../web/`](../web/). Keep app fixes
 
 - [`terraform/`](terraform/README.md): Container Apps, private PostgreSQL, networking, identities and monitoring.
 - [`ops-ui/`](ops-ui/): Local React maintenance workbench for scoped checks and reviewable recommendations.
+- [`build-task.yaml`](build-task.yaml): Bounded registry builds and runtime checks when local Docker is unavailable.
 - [Maintenance guide](../docs/azure-maintenance-workbench.md): Workbench setup and usage.
 
 Release from a reviewed commit on `main`. Build immutable images, run the edition and private-access checks, inspect the Terraform plan, and deploy those digests. Preserve the private backend, database network rules and existing Terraform state.

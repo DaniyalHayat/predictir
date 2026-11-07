@@ -167,7 +167,7 @@ export default function Assistant({market,book,fees,research,history,onClose,mod
         <div className="assistant-transcript">
           {messages.map((message,i)=>message.role==='user'?
             i===0&&automatic?null:<p className="assistant-question" key={i}><small>Your question</small>{message.content}</p>:
-            message.content?<Answer key={i} text={message.content} deep={deep}/>:null)}
+            message.content?<Answer key={i} text={message.content} deep={deep} contractTitle={contractTitle(market)}/>:null)}
         </div>
         {error&&<div className="notice error assistant-retry" role="alert"><p>{error}</p><button type="button" className="text-button" onClick={()=>send('',true)}>Retry question</button></div>}
         {!busy&&!error&&(!automatic||latest?.content)&&<div className="assistant-next">

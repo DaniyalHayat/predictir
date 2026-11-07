@@ -54,7 +54,7 @@ test('uncalibrated proxy can be inspected but cannot become a YES/NO screen', as
 });
 test('headlines never alter probability or side; no article bodies are returned', async () => {
   const a = await marketBrief(ticker, {}, dependencies());
-  const b = await marketBrief(ticker, {}, dependencies({ headlines: async () => ({ status: 'live', articles: [{ title: 'Unexpected inflation change', url: 'https://example.org/news', seen_at: '2026-10-28T11:00:00Z' }] }) }));
+  const b = await marketBrief(ticker, {}, dependencies({ headlines: async () => ({ status: 'live', articles: [{ title: 'Unexpected US CPI inflation change', url: 'https://example.org/news', seen_at: '2026-10-28T11:00:00Z' }] }) }));
   assert.equal(a.forecast.probability, b.forecast.probability);
   assert.equal(a.decision.side, b.decision.side);
   assert.equal(a.decision.conservative_edge, b.decision.conservative_edge);
