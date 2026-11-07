@@ -3,11 +3,12 @@ const FIRST_REVIEW_MS=2*60*1000;
 export const REVIEW_DEADLINE_MS=8000;
 export const REVIEW_SETTINGS_KEY='predictir.position-reviews.v1';
 
-export function positionReviewInput(position,positions,model){
+export function positionReviewInput(position,positions,model,{availableCash}={}){
   const quantity=position.remaining_quantity;
   const shared_quantity=positions.filter(row=>row.ticker===position.ticker&&row.side===position.side)
     .reduce((sum,row)=>sum+row.remaining_quantity,0);
-  return {ticker:position.ticker,side:position.side,quantity,basis:position.remaining_basis,shared_quantity,model};
+  return {ticker:position.ticker,side:position.side,quantity,basis:position.remaining_basis,shared_quantity,model,
+    ...(Number.isFinite(availableCash)&&availableCash>=0?{available_cash:availableCash}:{})};
 }
 
 export function duePositionReviews(positions,settings,now=Date.now()){

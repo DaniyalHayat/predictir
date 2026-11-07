@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import {createElement} from 'react';
 import {renderToStaticMarkup} from 'react-dom/server';
-import {Answer} from '../ui/Assistant.jsx';
+import {Answer} from '../ui/AssistantAnswer';
 
 const render=(text:string)=>renderToStaticMarkup(createElement(Answer,{text}));
 

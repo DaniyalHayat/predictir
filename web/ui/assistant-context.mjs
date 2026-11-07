@@ -26,4 +26,3 @@ export function assistantPayload(ticker,model,messages,launch){
   return {ticker,model,messages,...(launch?.panel?{panel:launch.panel,detail:launch.detail}:{}),
     ...(launch?.executionControls?{execution_controls:launch.executionControls}:{})};
 }
-

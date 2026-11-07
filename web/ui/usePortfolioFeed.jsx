@@ -52,7 +52,9 @@ export default function usePortfolioFeed(tickers,model='validated'){
     function connect(){
       if(stopped||document.hidden||stream||!streamed.length)return;
       stream=new EventSource(API_BASE+'/api/portfolio/stream?tickers='+encodeURIComponent(streamed.join(',')));
-      stream.addEventListener('book',event=>{try{const value=JSON.parse(event.data);if(!tracked.includes(value.ticker))return;receive({...value,transport:'exchange-websocket'});retries=0;setStatus(current=>({...current,[value.ticker]:'Live stream'}));}catch{}});
+      stream.addEventListener('book',event=>{try{const value=JSON.parse(event.data);if(!tracked.includes(value.ticker))return;receive(value);retries=0;
+        const label=value.transport==='public-rest-poll'?'Public quote polling':value.transport==='exchange-websocket'?'Live stream':'Observed depth';
+        setStatus(current=>({...current,[value.ticker]:label}));}catch{}});
       stream.addEventListener('status',event=>{try{const value=JSON.parse(event.data);if(tracked.includes(value.ticker))setStatus(current=>({...current,[value.ticker]:String(value.status||'Connecting')}));}catch{}});
       stream.onerror=()=>{stream?.close();stream=null;if(!stopped&&!document.hidden){retryTimer=setTimeout(connect,Math.min(30000,3000*(1+Math.random()*.2)*2**Math.min(retries++,4)));}};
     }

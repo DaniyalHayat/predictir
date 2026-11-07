@@ -13,7 +13,7 @@ permissions:
 
 jobs:
   build-frontend:
-    if: github.ref == 'refs/heads/azure-edition'
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     env:

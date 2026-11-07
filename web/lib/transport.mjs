@@ -1,6 +1,6 @@
 export class DataResponseError extends Error {
-  constructor(message, {status = 502, code = 'DATA_RESPONSE', url = ''} = {}) {
-    super(message); this.name = 'DataResponseError'; this.status = status; this.code = code; this.url = url;
+  constructor(message, {status = 502, code = 'DATA_RESPONSE', url = '', retryAfterMs = 0} = {}) {
+    super(message); this.name = 'DataResponseError'; this.status = status; this.code = code; this.url = url; this.retryAfterMs = retryAfterMs;
   }
 }
 
@@ -24,6 +24,13 @@ export async function readJSON(response, {source = 'Data service', maximumBytes 
   const original = new TextDecoder().decode(bytes),text=original.trim();
   const contentType = response.headers.get('content-type') || '';
   if (/^\s*</.test(text) || /text\/html/i.test(contentType)) {
+    if(response.status===429){
+      const retry=response.headers.get('retry-after'),seconds=retry===null?NaN:Number(retry);
+      const wait=Number.isFinite(seconds)?seconds*1000:Date.parse(retry)-Date.now();
+      const retryAfterMs=Number.isFinite(wait)?Math.max(1000,Math.min(300000,wait)):15000;
+      throw new DataResponseError(`Site protection paused requests. Try again in ${Math.ceil(retryAfterMs/1000)} seconds.`,
+        {code:'EDGE_RATE_LIMITED',status:429,url:response.url,retryAfterMs});
+    }
     throw new DataResponseError(`${source} returned a web page instead of JSON. Check the API address or try again shortly.`,
       {code: 'HTML_INSTEAD_OF_JSON', status: response.ok ? 502 : response.status, url: response.url});
   }

@@ -44,4 +44,3 @@ export function readNews(value,articles,{reddit=false,x=false}={}){
     moreMatched:news.matched.filter(row=>!highlighted.includes(row)),
     moreRelated:news.related.filter(row=>!highlighted.includes(row))};
 }
-

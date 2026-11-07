@@ -15,7 +15,9 @@ export const dynamic = "force-dynamic";
 export const maxDuration = 800;
 export async function GET(request, context) {
   const {path} = await context.params, endpoint = path.join("/"), params = new URL(request.url).searchParams;
-  const proxied=await proxyBackend(request,path);if(proxied)return proxied;
+  if(endpoint==='workspace/graphql')return Response.json({errors:[{message:'Use POST for the headline replay operation.'}]},
+    {status:405,headers:{Allow:'POST','Cache-Control':'no-store'}});
+  if(!context.privateRuntime){const proxied=await proxyBackend(request,path);if(proxied)return proxied;}
   if(endpoint==='session'||endpoint.startsWith('account/'))return makeAccountHandler({storage:cloudEnabled()?store():null})(request,endpoint);
   const vertical = params.get("vertical") || "Macro", ticker = params.get("ticker"), contracts = params.has("contracts") ? Number(params.get("contracts")) : 100;
   const headers = {"Cache-Control":"no-store"};
@@ -51,9 +53,13 @@ export async function GET(request, context) {
 }
 export async function POST(request,context) {
   const {path}=await context.params,endpoint=path.join("/"),headers={"Cache-Control":"no-store"};
-  const proxied=await proxyBackend(request,path);if(proxied)return proxied;
+  if(!context.privateRuntime){const proxied=await proxyBackend(request,path);if(proxied)return proxied;}
   if(endpoint.startsWith('account/'))return makeAccountHandler({storage:cloudEnabled()?store():null})(request,endpoint);
   try {
+    if(endpoint==='workspace/graphql'){
+      const {headlineReplayGraphQL}=await import('../../../lib/workspace/headline-replay-graphql.mjs');
+      return await headlineReplayGraphQL(request);
+    }
     if(endpoint==='workspace/position-review'){
       if(!(request.headers.get('content-type')||'').toLowerCase().startsWith('application/json'))return Response.json({error:'Use application/json'},{status:415,headers});
       const value=await localPositionReview(JSON.parse(await readProxyBody(request,4000)),{signal:request.signal});
@@ -75,7 +81,9 @@ export async function POST(request,context) {
 }
 export async function PUT(request,context){
   const {path}=await context.params,endpoint=path.join('/');
-  const proxied=await proxyBackend(request,path);if(proxied)return proxied;
+  if(endpoint==='workspace/graphql')return Response.json({errors:[{message:'Use POST for the headline replay operation.'}]},
+    {status:405,headers:{Allow:'POST','Cache-Control':'no-store'}});
+  if(!context.privateRuntime){const proxied=await proxyBackend(request,path);if(proxied)return proxied;}
   if(endpoint==='account/portfolio')return makeAccountHandler({storage:cloudEnabled()?store():null})(request,endpoint);
   return Response.json({error:'Unknown API route'},{status:404});
 }

@@ -56,4 +56,3 @@ test('rejected paths never reserve a provider read or invoke the transport', asy
   });
   assert.equal(result.data.market.ticker, 'VALID-FIXTURE');
 });
-

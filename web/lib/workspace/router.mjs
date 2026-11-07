@@ -21,7 +21,8 @@ import settlementValidation from '../../public/research/settlement-calibration.j
 const researchCache=new Map(),researchInflight=new Map();
 const scanCache=new Map(),scanInflight=new Map();
 const evidenceCache=new Map(),evidenceInflight=new Map();
-let positionIdeasPending,positionIdeasWarmAt=0;
+const positionIdeasPending=new Map();
+let positionIdeasWarmAt=0;
 function modelChoice(model='baseline'){
   if(!['baseline','validated','challenger'].includes(model))throw new RangeError('Choose the validated baseline or experimental challenger');
   return model==='validated'?'baseline':model;
@@ -244,7 +245,7 @@ export async function workspaceRecommendations(category='sports',budget=20,model
     finally{if(useCache)scanInflight.delete(key);}
   }
   const candidates=data.rows.flatMap(row=>row.error?[{ticker:row.market.ticker,title:row.market.title,event_ticker:row.market.event_ticker,side:'PASS',eligible:false,reasons:[row.error]}]:
-    tradeCandidates(row.market,row.depth,row.research,{budget,coefficient:Number.isFinite(row.fee_coefficient)?row.fee_coefficient:.07,experimental:model==='challenger'})
+    (row.research?.forecast?.outcomes?positionIdeaCandidates:tradeCandidates)(row.market,row.depth,row.research,{budget,coefficient:Number.isFinite(row.fee_coefficient)?row.fee_coefficient:.07,experimental:model==='challenger'})
       .map(value=>({...value,fee_source:Number.isFinite(row.fee_coefficient)?'series_metadata':'general_assumption'})));
   const result=rankCandidates(candidates,{experimental:model==='challenger'});
   const selectedEvents=new Set(result.candidates.map(row=>row.event_ticker||row.ticker));
@@ -282,13 +283,19 @@ export function positionIdeaCandidates(market,depth,research,{now=Date.now(),bud
   if(!research.forecast.outcomes)return tradeCandidates(market,depth,research,assumptions);
   const {win,loss,tie}=research.forecast.outcomes;
   return paperScenarios(market,depth,research,assumptions).filter(row=>row.conservative_edge>0).map(row=>({
-    ...row,eligible:true,point_edge:row.conservative_edge+(row.settlement_value-row.settlement_value_range[0]),
-    win_probability:row.side==='YES'?win:loss,tie_probability:tie,tie_payout:.5
+    ...row,eligible:true,paper_scenario:false,scenario_eligible:false,
+    point_edge:row.conservative_edge+(row.settlement_value-row.settlement_value_range[0]),
+    max_entry_price:Math.max(0,row.settlement_value_range[0]-.02),
+    max_entry_price_note:'All-in unit-cost ceiling from the tie-adjusted lower settlement-value bound, less the 2¢ entry buffer.',
+    win_probability:row.side==='YES'?win:loss,tie_probability:tie,tie_payout:.5,
+    classification:'PAPER_RESEARCH_SCENARIO',paper_only:true,estimated:true,
+    reasons:['The released model’s tie-adjusted lower payout bound clears the fee-inclusive entry and 2¢ buffer. A tie pays 50¢ per contract on either side.']
   }));
 }
 
-export async function recentPositionIdeas() {
-  if(positionIdeasPending)return positionIdeasPending;
+export async function recentPositionIdeas({budget=20}={}) {
+  if(!Number.isFinite(budget)||budget<=0||budget>10000)throw new RangeError('Choose a positive paper alternative budget up to $10,000');
+  if(positionIdeasPending.has(budget))return positionIdeasPending.get(budget);
   const load=async()=>{
     const now=Date.now(),recent=new Map(),categories=new Set(),books=new Map();
     for(const {rows,as_of} of scanCache.values()){
@@ -323,10 +330,10 @@ export async function recentPositionIdeas() {
     if(needDepth.length)for(const [ticker,depth] of await batchBooks(needDepth).catch(()=>new Map()))books.set(ticker,depth);
     const as_of=new Date().toISOString();
     const ranked=rankCandidates(candidates.flatMap(({market,research})=>books.has(market.ticker)?
-      positionIdeaCandidates(market,books.get(market.ticker),research,{now:Date.parse(as_of),budget:20,coefficient:research.fee_coefficient??.07}):[]));
+      positionIdeaCandidates(market,books.get(market.ticker),research,{now:Date.parse(as_of),budget,coefficient:research.fee_coefficient??.07}):[]));
     return {rows:ranked.candidates.map(row=>({ticker:row.ticker,event_ticker:row.event_ticker,title:row.title,
       side:row.side,category:row.category,as_of:row.quote_as_of,conservative_edge:row.conservative_edge,
-      expected_edge:row.point_edge,expected_profit:row.expected_profit,budget:20,contracts:row.contracts,
+      expected_edge:row.point_edge,expected_profit:row.expected_profit,budget,contracts:row.contracts,
       cost:row.cost,probability_yes:row.probability_yes,interval_yes:row.interval_yes,model:row.model,source_as_of:row.source_as_of,
       ...(row.partial_payout?{settlement_value:row.settlement_value,settlement_value_range:row.settlement_value_range,
         win_probability:row.win_probability,tie_probability:row.tie_probability,tie_payout:row.tie_payout}:{})})),
@@ -335,9 +342,9 @@ export async function recentPositionIdeas() {
       cached_categories:[...categories].filter(id=>WORKSPACE_CATEGORIES.some(row=>row.id===id)),
       category_count:WORKSPACE_CATEGORIES.length,scanned_contracts:candidates.filter(({market})=>books.has(market.ticker)).length,as_of};
   };
-  positionIdeasPending=load();
+  const pending=load();positionIdeasPending.set(budget,pending);
   if(!positionIdeasWarmAt||Date.now()-positionIdeasWarmAt>=25*60000)setImmediate(warmPositionIdeaPool).unref();
-  try{return await positionIdeasPending;}finally{positionIdeasPending=undefined;}
+  try{return await pending;}finally{positionIdeasPending.delete(budget);}
 }
 
 export async function workspaceGET(endpoint,params,dependencies={}) {

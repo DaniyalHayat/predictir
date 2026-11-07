@@ -57,6 +57,20 @@ test('SELL requires a released interval below bids and filters recommendations b
   assert.equal(result.alternative_coverage.category_count,8);
   assert.deepEqual(result.alternative_coverage.checked_categories,['macro','sports']);
 });
+
+test('replacement scenarios use available paper cash plus executable sale proceeds, capped by the chosen budget',async()=>{
+  const {position,dependencies}=setup('BUDGET-REVIEW',{p:.2,interval:[.1,.3]});
+  let observed;
+  dependencies.recentPositionIdeas=async input=>{observed=input.budget;return {rows:[]};};
+  const result=await localPositionReview({...position,available_cash:.5,alternative_budget:20},{dependencies});
+  assert.equal(result.action,'SELL');
+  assert.ok(Math.abs(observed-(result.evaluation.marked_value+.5))<1e-10);
+  assert.equal(result.alternative_coverage.budget,observed);
+  assert.equal(result.alternative_coverage.budget_source,'available_cash_and_net_exit');
+  assert.match(result.alternative_coverage.scope,/separate alternatives, not three simultaneous allocations/);
+  const limited=await reviewPaperPosition({...position,available_cash:100,alternative_budget:2},{dependencies});
+  assert.equal(observed,2);assert.equal(limited.alternative_coverage.budget,2);
+});
 test('automatic and manual paper scans account for a matched lineup scenario before issuing HOLD',async()=>{
   const {position,dependencies}=setup('KXNBAGAME-26NOV06PORLAL-LAL',{p:.51,interval:[.42,.63]});
   const baseResearch=dependencies.workspaceResearch;
@@ -131,7 +145,8 @@ test('flow keeps only recent exact public fills and recognizes partial windows',
 
 test('position route rejects invalid inputs and cross-site requests before touching providers',async()=>{
   const {position}=setup('ROUTE-REVIEW');
-  for(const extra of [{quantity:'10'},{quantity:0},{basis:-1},{shared_quantity:1},{ticker:'../private'},{side:'buy'},{automatic:'yes'}])
+  for(const extra of [{quantity:'10'},{quantity:0},{basis:-1},{shared_quantity:1},{ticker:'../private'},{side:'buy'},{automatic:'yes'},
+    {available_cash:-1},{available_cash:'20'},{alternative_budget:0},{alternative_budget:10001}])
     assert.throws(()=>parsePositionReview({...position,...extra}),RangeError);
   const routeContext={privateRuntime:true,params:Promise.resolve({path:['workspace','position-review']})};
   const response=await POST(new Request('http://localhost/api/workspace/position-review',{method:'POST',headers:{'Content-Type':'application/json'},

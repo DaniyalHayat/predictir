@@ -1,0 +1,9 @@
+**
+!web
+!web/database
+!web/database/00[1-6]_*.sql
+!azure
+!azure/terraform
+!azure/terraform/bootstrap
+!azure/terraform/bootstrap/*.sql
+!azure/terraform/bootstrap/run.sh

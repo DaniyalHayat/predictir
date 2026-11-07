@@ -2,12 +2,16 @@
 import {useCallback,useEffect,useRef,useState} from 'react';
 import {api} from './api.mjs';
 import {automaticReviewSignal,duePositionReviews,positionReviewInput,reviewSettings,REVIEW_SETTINGS_KEY,REVIEW_DEADLINE_MS} from './position-review-state.mjs';
+import {paperCapital} from './paper-capital.mjs';
 
-export default function usePositionReviews(positions,model){
+export default function usePositionReviews(positions,model,paperLedger){
   const [results,setResults]=useState({}),[settings,setSettings]=useState({});
   const [notification,setNotification]=useState('default');
   const running=useRef(new Map()),latest=useRef(positions),currentSettings=useRef({}),mounted=useRef(false);
   const currentModel=useRef(model);currentModel.current=model;
+  let availableCash;
+  try{availableCash=paperCapital(paperLedger?.ledger,Number(paperLedger?.bankroll)).available;}catch{}
+  const currentCash=useRef(availableCash);currentCash.current=availableCash;
   latest.current=positions;
   useEffect(()=>{
     mounted.current=true;
@@ -28,7 +32,7 @@ export default function usePositionReviews(positions,model){
   const run=useCallback(async(position,automatic=false)=>{
     const id=position.id;
     if(running.current.has(id)||position.remaining_quantity<=1e-8)return;
-    const input=positionReviewInput(position,latest.current,model);
+    const input=positionReviewInput(position,latest.current,model,{availableCash:currentCash.current});
     const controller=new AbortController(),started=performance.now(),signature=JSON.stringify(input);
     running.current.set(id,controller);
     setResults(previous=>({...previous,[id]:{signature,started,automatic}}));
@@ -37,7 +41,7 @@ export default function usePositionReviews(positions,model){
         body:JSON.stringify({...input,...(automatic?{automatic:true}:{})}),signal:controller.signal,timeoutMs:REVIEW_DEADLINE_MS});
       if(value.ticker!==position.ticker)throw new Error('The analysis returned a different contract.');
       const retained=latest.current.find(row=>row.id===id);
-      if(!mounted.current||!retained||currentModel.current!==model||JSON.stringify(positionReviewInput(retained,latest.current,model))!==signature)return;
+      if(!mounted.current||!retained||currentModel.current!==model||JSON.stringify(positionReviewInput(retained,latest.current,model,{availableCash:currentCash.current}))!==signature)return;
       const {notify,...signal}=automatic?automaticReviewSignal(value.action,currentSettings.current[id]):{};
       updateSetting(id,{checked:Date.now(),...signal});
       setResults(rows=>({...rows,[id]:{signature,value,elapsed:performance.now()-started,automatic}}));
@@ -78,7 +82,7 @@ export default function usePositionReviews(positions,model){
   },[run]);
   const resultFor=position=>{
     const row=results[position.id];
-    return row?.signature===JSON.stringify(positionReviewInput(position,positions,model))?row:null;
+    return row?.signature===JSON.stringify(positionReviewInput(position,positions,model,{availableCash}))?row:null;
   };
   const alerts=positions.filter(row=>row.remaining_quantity>1e-8&&settings[row.id]?.unread).slice(0,8).map(row=>({
     id:row.id,title:row.title||row.ticker,reason:resultFor(row)?.value?.action==='SELL'?resultFor(row).value.reason:'Earlier SELL signal. Run a fresh scan before closing.'

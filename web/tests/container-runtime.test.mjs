@@ -49,3 +49,22 @@ test('Railway runtime keeps dependencies in its builder and runs without OS pack
   assert.match(stage, /COPY --from=dependencies.*\/tmp\/market-lab-models/);
   assert.doesNotMatch(source, /--mount=type=cache,id=predictir-public-npm/);
 });
+
+test('Azure frontend and backend preserve their startup scripts in minimal nonroot stages', async () => {
+  const source = await readFile(new URL('../Dockerfile.azure', import.meta.url), 'utf8');
+  const stages = source.split(/\n(?=FROM )/);
+  const front = stages.find(stage => stage.startsWith('FROM runtime AS front'));
+  const backend = stages.find(stage => stage.split(/\r?\n/, 1)[0] === 'FROM runtime AS backend');
+  assert.ok(front);
+  assert.ok(backend);
+  assertMinimalRuntime(source, front);
+  assertMinimalRuntime(source, backend);
+  assert.match(front, /COPY --from=geography.*country\.mmdb/);
+  assert.match(front, /CMD \["cloud\/azure-front\.mjs"\]/);
+  assert.match(backend, /CMD \["--max-old-space-size=384", "cloud\/azure\.mjs"\]/);
+  assert.match(backend, /COPY --from=backend-dependencies.*node_modules/);
+  assert.match(source, /next typegen[\s\S]*npm run typecheck -- --incremental false/);
+  assert.match(source, /npm run build -- --webpack/);
+  const configuration = await readFile(new URL('../next.config.mjs', import.meta.url), 'utf8');
+  assert.match(configuration, /PREDICTIR_SEPARATE_TYPECHECK==='1'\?\{webpackMemoryOptimizations:true\}/);
+});

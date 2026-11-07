@@ -2,7 +2,7 @@
 import {useEffect,useState} from 'react';
 import {ArrowUpRight,Loader2,RefreshCw,SlidersHorizontal} from 'lucide-react';
 import {api,cents,count,dateLabel,dollars,percent} from './api.mjs';
-import {createVisibleRefresh,screenFreshness,screenRefreshDelay} from './screen-freshness.mjs';
+import {createVisibleRefresh,screenFreshness,screenRefreshDelay} from './screen-freshness';
 function DoubleChance({value}){
   if(typeof value==='number')return <strong>{percent(value)}</strong>;
   if(!value||!Number.isFinite(value.probability))return <><strong>{value?.possible?'Possible on a full payout':'Unavailable'}</strong>{value?.reason&&<small>{value.reason}</small>}</>;
@@ -10,7 +10,7 @@ function DoubleChance({value}){
 }
 function Candidate({row,budget,onOpen,experimental}){
   const side=String(row.side||'PASS').toUpperCase(),fresh=row._freshness?.current!==false,hasScenario=fresh&&Number.isFinite(row.cost)&&row.contracts>0;
-  const probability=Number.isFinite(row.probability_yes)?row.probability_yes:row.probability;
+  const probability=row.partial_payout?row.win_probability:Number.isFinite(row.probability_yes)?row.probability_yes:row.probability;
   if(row.paper_scenario)return <article className="recommendation-card" data-recommendation-ticker={row.ticker}><div className="recommendation-heading"><div><small>{row.ticker}</small><h2>{row.title}</h2></div><span className={'verdict '+(row.scenario_eligible?'experimental':'unchecked')}>{side} scenario</span></div>
     {!fresh&&<p className="notice">{row._freshness.reason}</p>}
     {fresh&&<><div className="recommendation-model"><div><span>All-in break-even</span><strong>{cents(row.break_even)}</strong></div><div><span>{Number.isFinite(row.settlement_value)?'Model value at settlement':'Quoted midpoint'}</span><strong>{cents(row.settlement_value??row.quote_reference)}</strong></div><div><span>Entry VWAP</span><strong>{cents(row.price)}</strong></div></div>
@@ -23,7 +23,8 @@ function Candidate({row,budget,onOpen,experimental}){
   </article>;
   return <article className="recommendation-card" data-recommendation-ticker={row.ticker}><div className="recommendation-heading"><div><small>{row.ticker}</small><h2>{row.title}</h2></div><span className={'verdict '+(!fresh?'stale':row.eligible?side.toLowerCase():row.scenario_eligible?'experimental':'pass')}>{!fresh?'STALE':row.eligible?side:row.scenario_eligible?'EXPERIMENTAL':'PASS'}</span></div>
     {!fresh&&<p className="notice" role="status">{row._freshness.reason} Previous profitability projections are withheld.</p>}
-    <div className="recommendation-model"><div><span>{Number.isFinite(row.probability_yes)?'Model P(YES)':'Model chance of '+side}</span><strong>{fresh?percent(probability):'Withheld'}</strong></div><div><span>Model range</span><strong>{fresh?(Number.isFinite(row.probability_yes)?row.interval_yes:row.interval)?.map(percent).join(' – ')||'Not established':'Refresh required'}</strong></div><div><span>{side==='PASS'?'Observed ask':side+' entry price'}</span><strong>{fresh?cents(row.price):'Withheld'}</strong></div></div>
+    <div className="recommendation-model"><div><span>{row.partial_payout?'Model win chance for '+side:Number.isFinite(row.probability_yes)?'Model P(YES)':'Model chance of '+side}</span><strong>{fresh?percent(probability):'Withheld'}</strong></div><div><span>{row.partial_payout?'Settlement value range':'Model range'}</span><strong>{fresh?(row.partial_payout?row.settlement_value_range?.map(cents):(Number.isFinite(row.probability_yes)?row.interval_yes:row.interval)?.map(percent))?.join(' – ')||'Not established':'Refresh required'}</strong></div><div><span>{side==='PASS'?'Observed ask':side+' entry price'}</span><strong>{fresh?cents(row.price):'Withheld'}</strong></div></div>
+    {fresh&&row.partial_payout&&<p className="model-caption">A tie has {percent(row.tie_probability)} modeled probability and pays {cents(row.tie_payout)} per contract. This payout is included in the expected profit and value range.</p>}
     {row.model&&<p className="model-caption">{row.model}{row.experimental||experimental?' · experimental paper scenario':''}</p>}
     {hasScenario&&<><div className="budget-projection"><div className="projection-start"><span>Budget {dollars(budget)}</span><strong>{count(row.contracts)} {side} contracts</strong><small>{dollars(row.cost)} all-in entry · {dollars(row.unspent_cash)} unspent</small></div><div className="projection-outcomes"><div><span>Balance if {side} wins</span><strong>{dollars(row.win_value??row.payout_if_win)}</strong><small>{dollars(row.profit_if_win)} profit after modeled entry costs</small></div><div><span>Balance if {side} loses</span><strong>{dollars(row.lose_value??row.unspent_cash)}</strong><small>{dollars(row.loss_if_lose??row.cost)} maximum entry loss</small></div></div></div>
       <div className="recommendation-estimates"><div><span>Expected profit</span><strong className={row.expected_profit>0?'positive':row.expected_profit<0?'negative':''}>{dollars(row.expected_profit)}</strong><small>{row.expected_profit_range?.map(dollars).join(' to ')} across model range</small></div><div><span>Chance of reaching {dollars(row.chance_double?.target??budget*2)}</span><DoubleChance value={row.chance_double}/></div></div>

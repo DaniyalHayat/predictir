@@ -5,7 +5,7 @@ import {sportsResearch} from '../lib/workspace/sports.mjs';
 import {matchNFLFixture, nflContractIdentity, parseNFLScoreboard} from '../lib/workspace/nfl-source.mjs';
 import {earlierNFLGames, fitNFL, NFL_RESULT_LAG_MS} from '../lib/workspace/nfl-math.mjs';
 import {evaluatePaperPosition,usableForecast} from '../lib/workspace/positions.mjs';
-import {positionIdeaCandidates} from '../lib/workspace/router.mjs';
+import {positionIdeaCandidates,workspaceRecommendations} from '../lib/workspace/router.mjs';
 import {tradeCandidates} from '../lib/workspace/recommendations.mjs';
 import archive from '../lib/workspace/models/nfl-results.json' with {type: 'json'};
 import validation from '../lib/workspace/models/nfl-validation.json' with {type: 'json'};
@@ -172,6 +172,24 @@ test('position replacements rank validated NFL tie-adjusted payouts only when th
   assert.deepEqual(alternatives(depth(.08,.91),{},{...open,rules_secondary:'A tie resolves No.'}),[]);
   assert.deepEqual(alternatives(depth(.08,.91),{},{...open,status:'closed'}),[]);
   assert.deepEqual(alternatives(depth(.08,.91),{},open,{extensions:{sports:{...sports,coverage:{partial:true}}}}),[]);
+});
+
+test('the category screen ranks verified half-tie NFL payouts as released entries',async t=>{
+  t.mock.method(Date,'now',now);
+  const open={...market,category:'sports',status:'active',close_time:fixture.played_at};
+  const sports=await sportsResearch(open,{getter:provider().getter,now});
+  const research={ticker:open.ticker,market:open,forecast:sports.forecast,extensions:{sports}};
+  const depth={ticker:open.ticker,as_of:new Date(now()).toISOString(),raw:{orderbook_fp:{yes_dollars:[['.08','200']],no_dollars:[['.91','200']]}}};
+  const screen=await workspaceRecommendations('sports',2,'baseline',{
+    markets:async()=>({markets:[open]}),research:async()=>research,batchBooks:async()=>new Map([[open.ticker,depth]])
+  });
+  assert.equal(screen.candidates.length,1);
+  const row=screen.candidates[0];
+  assert.equal(row.ticker,open.ticker);assert.equal(row.side,'YES');assert.equal(row.eligible,true);
+  assert.equal(row.partial_payout,true);assert.equal(row.paper_scenario,false);
+  assert.equal(row.tie_payout,.5);assert.equal(row.win_probability,sports.forecast.outcomes.win);
+  assert.ok(row.cost<=2&&row.conservative_edge>0);
+  assert.equal(screen.paper_scenarios.length,0);
 });
 
 test('the archived validation forecasts only from results with the fixed 36-hour availability gap', () => {

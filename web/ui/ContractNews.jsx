@@ -38,15 +38,18 @@ function NewsCards({items,long,label}){
 }
 function ModelImpact({feedback,context}){
   const percentage=value=>(100*value).toFixed(1)+'%';
+  const bounded=value=>Number.isFinite(value)&&value>=0&&value<=1;
   if(feedback?.status!=='available'&&context)return <div className="news-brief-section"><h5>How this fits the model</h5>
     {Number.isFinite(context.current_probability)&&<p>{context.model_name||'The independent model'} currently estimates {percentage(context.current_probability)} YES. {context.source_as_of&&<>Its inputs were observed {dateLabel(context.source_as_of)}.</>}</p>}
     <p>{context.reason}</p>
     {(context.matched_reports>0||context.related_reports>0)&&<p>This check found {context.matched_reports} matched and {context.related_reports} related reports. Start with the matched report below, then compare its observation date and specific claim with the model inputs.</p>}
   </div>;
   if(feedback?.status!=='available')return <div className="news-brief-section"><h5>Model impact</h5><p>{feedback?.reason||'No verified update changed the model in this news check. Headlines and social posts carry zero forecast weight on their own.'}</p></div>;
+  if(!bounded(feedback.baseline_probability)||!Array.isArray(feedback.decision_interval)||feedback.decision_interval.length!==2||!feedback.decision_interval.every(bounded)||feedback.decision_interval[0]>feedback.decision_interval[1])return <div className="news-brief-section"><h5>Model impact</h5><p>The matched reporting was returned without a complete model adjustment. Refresh the research to check its numerical effect.</p></div>;
+  const scenarios=Array.isArray(feedback.scenarios)?feedback.scenarios.filter(row=>row&&typeof row.name==='string'&&typeof row.status==='string'&&bounded(row.conditional_probability)):[];
   return <div className="news-brief-section"><h5>What changed in the model</h5>
     <p>The team model starts at {percentage(feedback.baseline_probability)} YES. The paper screen tests {feedback.decision_interval.map(percentage).join(' to ')} YES after accounting for lineup risk.</p>
-    {feedback.scenarios.map(row=><p key={row.player_id}>{row.name} is listed {row.status.toLowerCase()}. The scenario puts YES at {percentage(row.conditional_probability)}, based on {row.dnp_games} games missed and {row.regular_games} games with regular minutes.</p>)}
+    {scenarios.map(row=><p key={row.player_id||row.name}>{row.name} is listed {row.status.toLowerCase()}. The scenario puts YES at {percentage(row.conditional_probability)}, based on {row.dnp_games} games missed and {row.regular_games} games with regular minutes.</p>)}
     {safeURL(feedback.source?.url)&&<p><a href={feedback.source.url} target="_blank" rel="noreferrer">Open the matched availability report <ArrowUpRight size={12}/></a></p>}
   </div>;
 }

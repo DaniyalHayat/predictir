@@ -37,6 +37,44 @@ test('automatic full analysis compares current model, reporting and exchange inp
   }
 });
 
+import {azureResearchAnswer,azureToolArguments} from '../lib/workspace/azure-research.mjs';
+
+test('automatic analysis includes current reporting and compares model and exchange figures across categories',async()=>{
+  const now=Date.now(),as_of=new Date(now).toISOString();
+  for(const ticker of ['KXNBAGAME-26NOV08LALDEN-LAL','KXEPLGAME-26NOV07LEETOT-TOT','KXTSAW-26NOV08-A2.35','KXHIGHNY-26NOV07-B67.5','KXBTC15M-26NOV072230-30']){
+    assert.deepEqual(azureToolArguments('get_research',ticker,'Explain the research view','analysis'),{ticker,include_reporting:true});
+    const packets=new Map([
+      ['get_contract',{ticker,market:{ticker},book:{as_of},quotes:{yes_ask_usd:.42,no_ask_usd:.60}}],
+      ['get_research',{ticker,title:'Selected outcome',as_of,forecast:{probability:.6,interval:[.5,.7],source_as_of:as_of},
+        opinion:{side:'PASS',reason:'The estimated range has not cleared the release check.'},evidence:[{
+          title:'Dated source for '+ticker,url:'https://www.example.com/'+ticker,excerpt:'Current source observation '+ticker,
+          published_at:as_of,match_scope:'matched',why_relevant:'Matches the selected observation window.'}]}],
+    ]);
+    const {answer}=await azureResearchAnswer({question:'Explain the research view',ticker,panel:'analysis',detail:'full',
+      tools:['get_contract','get_research'],packets,explain:{math:()=>''},now});
+    assert.match(answer,/observed YES midpoint is 41.0%/);
+    assert.match(answer,/independent model estimates 60.0% YES, 19.0 percentage points above/);
+    assert.ok(answer.includes('Dated source for '+ticker));
+    assert.ok(answer.includes('Current source observation '+ticker));
+    assert.match(answer,/Matches the selected observation window/);
+    assert.match(answer,/Research screen: PASS/);
+  }
+});
+
+test('fresh quotes never present an expired source estimate as a current model comparison',async()=>{
+  const now=Date.now(),as_of=new Date(now).toISOString(),ticker='KXBTC15M-26NOV072230-30';
+  const packets=new Map([
+    ['get_contract',{ticker,market:{ticker},book:{as_of},quotes:{yes_ask_usd:.42,no_ask_usd:.60}}],
+    ['get_research',{ticker,as_of,forecast:{probability:.6,interval:[.5,.7],max_source_age_seconds:125,
+      source_as_of:new Date(now-86400000).toISOString()},opinion:{side:'PASS',reason:'Source expired'}}],
+  ]);
+  const {answer}=await azureResearchAnswer({question:'Explain the probability range',ticker,panel:'analysis',detail:'full',
+    tools:['get_contract','get_research'],packets,explain:{math:()=>''},now});
+  assert.match(answer,/observed YES midpoint is 41.0%/);
+  assert.match(answer,/outside the model’s freshness window/);
+  assert.doesNotMatch(answer,/independent model estimates 60.0%/);
+});
+
 test('large diagnostics preserve current probability and dated reporting inside MCP bounds',()=>{
   const ticker='KXTEST-ALPHA',as_of=new Date().toISOString();
   const value=boundPacket({ticker,title:'Selected contract',as_of,summary:'Research result',
