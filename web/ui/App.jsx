@@ -5,7 +5,6 @@ import {Activity,ArrowLeft,ArrowUpRight,Bitcoin,BookOpen,Check,ChevronDown,Cloud
   Leaf,Loader2,MessageSquare,Music2,Plane,RefreshCw,Search,Trophy,Landmark,X,Palette,ChartNoAxesCombined,Wallet,LayoutDashboard,UserRound,Bookmark} from 'lucide-react';
 import {api,openEventStream,cents,count,dollars,percent,dateLabel} from './api.mjs';
 import {initialSelection,selectionReducer,contractTitle,refreshMarketRows} from './selection';
-import Chart from './Chart';
 import QuoteComparison from './QuoteComparison';
 import Modal from './Modal';
 import useOpinions from './useOpinions.jsx';
@@ -23,6 +22,7 @@ import usePositionReviews from './usePositionReviews.jsx';
 import './workspace.css';
 import './execution-lab.css';
 import './position-review.css';
+const Chart=dynamic(()=>import('./Chart'),{loading:()=> <div className="chart" role="status"><div className="chart-empty">Loading price history…</div></div>});
 const Portfolio=dynamic(()=>import('./Portfolio.jsx'),{loading:()=> <div className="workspace-empty" role="status">Loading portfolio…</div>});
 const Recommendations=dynamic(()=>import('./Recommendations.jsx'),{loading:()=> <div className="workspace-empty" role="status">Loading research screen…</div>});
 const ExecutionLab=dynamic(()=>import('./ExecutionLab.jsx'),{loading:()=> <div className="workspace-empty" role="status">Loading execution lab…</div>});
