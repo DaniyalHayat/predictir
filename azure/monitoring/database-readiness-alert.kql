@@ -11,4 +11,4 @@ let LastHealthy = toscalar(Checks | where Status == 200 | summarize max(TimeGene
 Checks
 | where Status == 503 and (isnull(LastHealthy) or TimeGenerated > LastHealthy)
 | summarize FailedChecks = count(), FirstFailure = min(TimeGenerated), LastFailure = max(TimeGenerated)
-| where FailedChecks >= 3 and LastFailure - FirstFailure >= 1m and LastFailure > ago(5m)
+| where FailedChecks >= 3 and LastFailure - FirstFailure >= 1m and LastFailure > ago(12m)

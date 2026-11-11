@@ -59,7 +59,7 @@ resource "azurerm_monitor_scheduled_query_rules_alert_v2" "database_readiness" {
 
   name                    = "${var.name_prefix}-database-readiness"
   display_name            = "Predictir database readiness"
-  description             = "Three or more failed backend database checks spanning at least one minute after the most recent success, with a failure in the last five minutes."
+  description             = "Three or more failed backend database checks spanning at least one minute after the most recent success, with a failure in the last 12 minutes."
   location                = local.location
   resource_group_name     = azurerm_resource_group.edition[0].name
   scopes                  = [azurerm_log_analytics_workspace.runtime[0].id]
