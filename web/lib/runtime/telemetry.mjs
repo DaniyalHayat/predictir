@@ -2,6 +2,7 @@ const BUCKETS = [1, 5, 10, 25, 50, 100, 250, 500, 1000, 2500, 5000, 10000];
 const THROTTLE_REASONS = new Set([
   'throttle_heavy_burst',
   'throttle_general_admission',
+  'throttle_access_admission',
   'throttle_runtime_disabled',
   'throttle_daily_work',
   'throttle_assistant_allowance',

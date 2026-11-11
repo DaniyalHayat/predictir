@@ -7,6 +7,7 @@ import {proxyBackend} from '../lib/workspace/proxy.mjs';
 import {assistantResponse} from '../lib/workspace/assistant.mjs';
 import {assistantContext} from '../lib/workspace/assistant-context.mjs';
 import {createMarketServer} from '../cloud/server.mjs';
+import {createAdmission} from '../lib/runtime/admission.mjs';
 
 const token=randomBytes(32).toString('base64url'),canaryToken=randomBytes(32).toString('base64url'),now=Date.parse('2026-11-07T12:00:00Z');
 const hash=value=>createHash('sha256').update(value).digest('hex');
@@ -49,9 +50,21 @@ test('missing configuration fails closed and redemption rejects CSRF, query-toke
 test('redemption is rate limited and logout removes only the share cookie',async()=>{
   const statuses=[];for(let i=0;i<11;i++)statuses.push((await redeemShareAccess(request('wrong',{ip:'192.0.2.14'}),{env,now})).status);
   assert.equal(statuses.filter(value=>value===401).length,10);assert.equal(statuses.at(-1),429);
+  assert.equal((await redeemShareAccess(request(token,{ip:'192.0.2.14'}),{env,now})).status,204);
+  assert.equal((await redeemShareAccess(request(canaryToken,{ip:'192.0.2.14'}),{env,now})).status,204);
   const response=await logoutShareAccess(new Request('https://predictir.dev/api/access/logout',{method:'POST',headers:{Origin:'https://predictir.dev'}}),{env});
   assert.equal(response.status,204);assert.match(response.headers.get('set-cookie'),new RegExp('^'+SHARE_COOKIE+'=;'));assert.match(response.headers.get('set-cookie'),/Max-Age=0/);
   assert.equal((await logoutShareAccess(new Request('https://predictir.dev/api/access/logout'),{env})).status,405);
+});
+
+test('rejected identities do not spend capacity and request classes reset independently',()=>{
+  const admitStatus=createAdmission(2,1),admitApplication=createAdmission(2,1);
+  assert.equal(admitStatus('first',1),true);
+  assert.equal(admitStatus('first',1),false);
+  assert.equal(admitStatus('second',1),true);
+  assert.equal(admitStatus('third',1),false);
+  assert.equal(admitApplication('third',1),true);
+  assert.equal(admitStatus('first',2),true);
 });
 
 test('preview links require allowed ingress before issuing a session cookie',async()=>{

@@ -1,12 +1,13 @@
 import {createHash,createHmac,timingSafeEqual} from 'node:crypto';
 import {accessIngress} from './workspace/access-ingress.mjs';
+import {createAdmission} from './runtime/admission.mjs';
 
 export const SHARE_COOKIE='__Host-predictir-share';
 export const SHARE_COOKIE_SECONDS=86400;
 export const CANARY_COOKIE='__Host-predictir-canary';
 export const CANARY_COOKIE_SECONDS=900;
 export const PRIVATE_HEADERS=Object.freeze({'Cache-Control':'private, no-store','Referrer-Policy':'no-referrer','X-Robots-Tag':'noindex, nofollow, noarchive, nosnippet, noimageindex','X-Content-Type-Options':'nosniff'});
-const limits=globalThis[Symbol.for('predictir.share.limits.v1')] ||= new Map();
+const admitFailedRedemption=globalThis[Symbol.for('predictir.share.failed-admission.v2')] ||= createAdmission(300,10);
 export const shareAccessEnabled=(env=process.env)=>env.PREDICTIR_SHARE_ACCESS==='1';
 function settings(env,kind='share'){
   const hash=env.PREDICTIR_SHARE_TOKEN_HASH,key=env.MARKET_EDGE_SECRET;
@@ -95,16 +96,11 @@ export function issueShareCookie(env=process.env,now=Date.now(),kind='share',exp
   const encoded=Buffer.from(JSON.stringify({v:1,h:config.hash,exp})).toString('base64url');
   return config.cookie+'='+encoded+'.'+signature(encoded,config.key,kind)+'; Path=/; Secure; HttpOnly; SameSite=Lax; Max-Age='+Math.min(config.seconds,exp-current);
 }
-function allowance(ip,env,now){
-  const slot=Math.floor(now/60000);
-  const fingerprint=createHmac('sha256',settings(env)?.key||'unconfigured').update('share-limit\0'+ip).digest('hex');
-  for(const [key,value]of limits)if(value.slot!==slot)limits.delete(key);
-  if(limits.size>4096&&!limits.has(fingerprint))return false;
-  for(const [key,maximum]of [['global',300],[fingerprint,10]]){
-    const value=limits.get(key)||{slot,used:0};value.used++;limits.set(key,value);
-    if(value.used>maximum)return false;
-  }
-  return true;
+function rejectRedemption(ip,key,now){
+  const fingerprint=createHmac('sha256',key).update('share-limit\0'+ip).digest('hex');
+  if(!admitFailedRedemption(fingerprint,Math.floor(now/60000)))
+    return Response.json({error:'Too many attempts. Try again in one minute.'},{status:429,headers:{...PRIVATE_HEADERS,'Retry-After':'60'}});
+  return Response.json({error:'This private link is invalid or expired.'},{status:401,headers:PRIVATE_HEADERS});
 }
 async function accessBody(request){
   if(request.headers.get('content-type')?.split(';')[0].trim().toLowerCase()!=='application/json')throw Object.assign(new Error(),{status:415});
@@ -115,21 +111,21 @@ async function accessBody(request){
 }
 export async function redeemShareAccess(request,{env=process.env,now=Date.now(),countryLookup}={}){
   if(request.method!=='POST')return Response.json({error:'Use POST.'},{status:405,headers:PRIVATE_HEADERS});
-  if(!shareAccessEnabled(env)||!settings(env))return Response.json({error:'Private access is not configured.'},{status:503,headers:PRIVATE_HEADERS});
+  const share=settings(env);
+  if(!shareAccessEnabled(env)||!share)return Response.json({error:'Private access is not configured.'},{status:503,headers:PRIVATE_HEADERS});
   if(!accessOriginAllowed(request,env)||request.headers.get('sec-fetch-site')==='cross-site'||new URL(request.url).search)return Response.json({error:'Open the private link directly.'},{status:403,headers:PRIVATE_HEADERS});
   const regional=await accessIngress(request.headers,env,countryLookup);
   if(regional.status!==200)return Response.json({error:'The access check could not be completed.'},{status:regional.status,headers:PRIVATE_HEADERS});
   const ip=regional.ip||request.headers.get('x-forwarded-for')?.split(',')[0]?.trim()||'unknown';
-  if(!allowance(ip,env,now))return Response.json({error:'Too many attempts. Try again in one minute.'},{status:429,headers:{...PRIVATE_HEADERS,'Retry-After':'60'}});
   try{
     const value=await accessBody(request);
-    if(!value||Object.keys(value).length!==1||typeof value.token!=='string'||!/^[A-Za-z0-9_-]{43,128}$/.test(value.token))return Response.json({error:'This private link is invalid or expired.'},{status:401,headers:PRIVATE_HEADERS});
+    if(!value||Object.keys(value).length!==1||typeof value.token!=='string'||!/^[A-Za-z0-9_-]{43,128}$/.test(value.token))return rejectRedemption(ip,share.key,now);
     const hash=createHash('sha256').update(value.token).digest('hex');
     const kind=['share','canary'].find(scope=>{
       const config=settings(env,scope);
       return config&&sameBytes(Buffer.from(hash),Buffer.from(config.hash));
     });
-    if(!kind)return Response.json({error:'This private link is invalid or expired.'},{status:401,headers:PRIVATE_HEADERS});
+    if(!kind)return rejectRedemption(ip,share.key,now);
     return new Response(null,{status:204,headers:{...PRIVATE_HEADERS,'Set-Cookie':issueShareCookie(env,now,kind)}});
   }catch(error){return Response.json({error:'The private link could not be opened.'},{status:[413,415].includes(error.status)?error.status:400,headers:PRIVATE_HEADERS});}
 }

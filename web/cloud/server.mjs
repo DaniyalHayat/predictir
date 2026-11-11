@@ -22,6 +22,7 @@ import {traceContext} from '../lib/runtime-observability.mjs';
 import {runtimeTelemetry,observeProviderAttempt,operationalRoute,throttleReason} from '../lib/runtime/telemetry.mjs';
 import {createLogPipeline,sanitizeOperationalRecord} from '../lib/runtime/log-pipeline.mjs';
 import {createDatabaseReadiness} from '../lib/runtime/database-readiness.mjs';
+import {createAdmission} from '../lib/runtime/admission.mjs';
 import {handleOperatorMCP} from '../lib/runtime/operator-mcp.mjs';
 import {makeAccountHandler} from '../lib/workspace/account.mjs';
 import {shareAccessEnabled,shareAccessKind,privateAccessAllowed,PRIVATE_HEADERS} from '../lib/private-access.mjs';
@@ -71,7 +72,10 @@ export function createMarketServer({feed:injectedFeed,storageEnabled=cloudEnable
     !Number.isInteger(streamMaxPerIP)||streamMaxPerIP<1||streamMaxPerIP>16||streamMaxPerIP>streamMaxConnections)throw new RangeError('Invalid streaming connection limits');
   const shareEnv={PREDICTIR_SHARE_ACCESS:shareAccess?'1':'0',PREDICTIR_SHARE_TOKEN_HASH:shareTokenHash,
     PREDICTIR_CANARY_TOKEN_HASH:canaryTokenHash,MARKET_EDGE_SECRET:edgeSecret};
-  const limits=new Map(),streamByIP=new Map();let connections=0,disabled=false,previousCpu=process.cpuUsage();
+  const admitApplication=createAdmission(1200,120),admitHeavy=createAdmission(1200,azureHeavyRequestsPerWindow);
+  const admitAccessRequest=createAdmission(120,20),admitAccessStatus=createAdmission(360,24),admitAccessOwner=createAdmission(120,30);
+  const ownerAccessActions=new Set(['list','decide','subscribe','unsubscribe']);
+  const streamByIP=new Map();let connections=0,disabled=false,previousCpu=process.cpuUsage();
   const recentLogs=[],logPipeline=createLogPipeline({write:line=>{const record=JSON.parse(line);recentLogs.push(record);if(recentLogs.length>200)recentLogs.shift();if(production&&!logger)process.stdout.write(line+'\n');}});
   function recordLog(event,values,options){
     const level=values.status>=500?'error':values.status>=400?'warn':'info',safe=sanitizeOperationalRecord(event,values,level);
@@ -138,19 +142,6 @@ export function createMarketServer({feed:injectedFeed,storageEnabled=cloudEnable
     res.setHeader('Strict-Transport-Security','max-age=31536000; includeSubDomains');
     res.setHeader('Content-Security-Policy',"default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; object-src 'none'");
     res.setHeader('Permissions-Policy','camera=(), microphone=(), geolocation=()');
-  }
-  function withinLimit(key,maximum,slot){
-    let item=limits.get(key);
-    if(!item||item.slot!==slot){
-      if(limits.size>4096)return false;
-      item={slot,used:0};limits.set(key,item);
-    }
-    return ++item.used<=maximum;
-  }
-  function allowed(identity){
-    const slot=Math.floor(now()/rateWindowMs);
-    if(limits.size>2048)for(const [key,value] of limits)if(value.slot<slot)limits.delete(key);
-    return withinLimit('global',1200,slot)&&withinLimit(identity,120,slot);
   }
   const workLimits={work:6000,'paper-reads':3000,'paper-scans':3000,'research-reads':3000,'market-screens':3000,'stream-opens':3000};
   const paperReadRoutes=new Set(['/api/book','/api/workspace/catalog','/api/workspace/markets','/api/workspace/portfolio-books','/api/workspace/context','/api/workspace/history','/api/workspace/sources']);
@@ -275,11 +266,17 @@ export function createMarketServer({feed:injectedFeed,storageEnabled=cloudEnable
         if(!shareAccess||!accessRequestsEnabled||url.search)return json(res,{error:'Unknown API route'},404);
         if(!edgeVerified)return json(res,{error:'Service authorization required'},401);
         if(req.method!=='POST'){res.setHeader('Allow','POST');return json(res,{error:'Use POST.'},405);}
-        if(!allowed(identity)){res.setHeader('Retry-After','60');return throttle('throttle_general_admission',{error:'Rate limit reached. Retry in one minute.'});}
         if(!validOrigin(req.headers.origin))return json(res,{error:'This origin is not allowed'},403);
         if(String(req.headers['content-type']||'').split(';',1)[0].trim().toLowerCase()!=='application/json')
           return json(res,{error:'Use application/json.'},415);
         const input=JSON.parse(await readBody(req,4096));
+        const action=input?.action;
+        const admit=action==='status'?admitAccessStatus:action==='request'?admitAccessRequest:
+          ownerAccessActions.has(action)?admitAccessOwner:null;
+        if(admit&&!admit(identity,Math.floor(now()/rateWindowMs))){
+          res.setHeader('Retry-After','60');
+          return throttle('throttle_access_admission',{error:'Rate limit reached. Retry in one minute.'});
+        }
         if(disabled&&input?.action==='request')return json(res,{error:'Access requests are temporarily unavailable.'},503);
         const result=await handleAccessRequest(storageEnabled()?storage():null,input);
         return json(res,result.value,result.code);
@@ -287,7 +284,7 @@ export function createMarketServer({feed:injectedFeed,storageEnabled=cloudEnable
       const accessKind=shareAccessKind(req.headers.cookie,shareEnv,now());
       if(shareAccess&&!serviceAuthorized(req.headers.authorization,serviceSecret)&&
         (!edgeVerified||!privateAccessAllowed(accessKind,url,req.method,false)))return json(res,{error:'A private Predictir link is required.'},401);
-      if(!allowed(identity)){res.setHeader('Retry-After','60');return throttle('throttle_general_admission',{error:'Rate limit reached. Retry in one minute.'});}
+      if(!admitApplication(identity,Math.floor(now()/rateWindowMs))){res.setHeader('Retry-After','60');return throttle('throttle_general_admission',{error:'Rate limit reached. Retry in one minute.'});}
       if(!validOrigin(req.headers.origin))return json(res,{error:'This origin is not allowed'},403);
       if(url.pathname==='/api/health')return json(res,{status:disabled?'limited':'ok',runtime:azureMode()==='live'?'Azure Container Apps':'Railway Node backend',market_data_only:true,
         streaming:{connections,transport:quoteTransport,...(feed.metrics?.()||{})},performance:{event_loop_p99_ms:Number.isFinite(eventLoop.percentile(99))?Math.round(eventLoop.percentile(99)/1e4)/100:0}});
@@ -389,7 +386,7 @@ export function createMarketServer({feed:injectedFeed,storageEnabled=cloudEnable
         (req.method==='GET'&&(url.pathname==='/api/workspace/execution-research'||url.pathname==='/api/workspace/recommendations'));
       if(isAzure&&heavyWork){
         const current=now(),slot=Math.floor(current/rateWindowMs);
-        if(!withinLimit('heavy#'+identity,azureHeavyRequestsPerWindow,slot)){
+        if(!admitHeavy(identity,slot)){
           res.setHeader('Retry-After',String(Math.ceil(((slot+1)*rateWindowMs-current)/1000)));
           return throttle('throttle_heavy_burst',{error:'Research requests are arriving too quickly. Retry shortly.'});
         }

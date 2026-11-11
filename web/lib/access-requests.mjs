@@ -105,14 +105,17 @@ export async function handleAccessRequest(request,operation,{env=process.env,now
       return response(null,204,[cookie(ownerCookie,expiry+'.'+signature,ownerSeconds)]);
     }
     if(operation==='request'||operation==='request/status'){
-      const [candidate,mac,extra]=readCookie(request,receiptCookie).split('.');
+      const current=readCookie(request,receiptCookie);
+      const [candidate,mac,extra]=current.split('.');
+      const receiptScope=value=>env.PREDICTIR_SHARE_TOKEN_HASH+'\0'+value;
+      const receiptMAC=value=>sign(env.MARKET_EDGE_SECRET,'predictir.access.receipt.v2',receiptScope(value));
       const existing=extra===undefined&&tokenPattern.test(candidate)&&typeof mac==='string'&&tokenPattern.test(mac)&&
-        equal(mac,sign(env.MARKET_EDGE_SECRET,'predictir.access.receipt',candidate))?candidate:null;
+        equal(mac,receiptMAC(candidate))?candidate:null;
+      if(operation==='request/status'&&!existing)
+        return response({status:'missing'},200,current?[cookie(receiptCookie,'',0)]:[]);
       const receipt=existing||randomBytes(32).toString('base64url');
-      const receiptHash=digest(receipt);
-      const receiptHeader=value=>cookie(receiptCookie,value+'.'+sign(env.MARKET_EDGE_SECRET,'predictir.access.receipt',value),receiptSeconds);
+      const receiptHash=digest('predictir.access.request.v2\0'+receiptScope(receipt));
       if(operation==='request/status'){
-        if(!existing)return response({status:'missing'},200,[receiptHeader(receipt)]);
         const result=await backend(request,env,fetcher,{action:'status',receiptHash},regional);
         if(result.status!==200||!statusPattern.test(result.data?.status||''))return providerFailure(result);
         if(result.data.status==='approved'){
@@ -121,8 +124,7 @@ export async function handleAccessRequest(request,operation,{env=process.env,now
           if(!share)return providerFailure({status:503});
           return response(null,204,[share,cookie(receiptCookie,'',0)]);
         }
-        const replacement=result.data.status==='missing'?[receiptHeader(randomBytes(32).toString('base64url'))]:
-          result.data.status==='declined'?[cookie(receiptCookie,'',0)]:[];
+        const replacement=result.data.status==='pending'?[]:[cookie(receiptCookie,'',0)];
         return response({status:result.data.status},200,replacement);
       }
       const {name,email,challengeToken}=await jsonBody(request,accessChallengeConfig(env).enabled?4096:1024);
@@ -135,7 +137,7 @@ export async function handleAccessRequest(request,operation,{env=process.env,now
       const ipHash=createHmac('sha256',env.MARKET_EDGE_SECRET).update('predictir.access.ip\0'+ip).digest('hex');
       const result=await backend(request,env,fetcher,{action:'request',receiptHash,name:name.trim(),email:email.trim().toLowerCase(),ipHash},regional);
       if(result.status!==202)return providerFailure(result);
-      return response({status:'pending'},202,[receiptHeader(receipt)]);
+      return response({status:'pending'},202,[cookie(receiptCookie,receipt+'.'+receiptMAC(receipt),receiptSeconds)]);
     }
     if(operation!=='manage')return response({error:'Unknown access action.'},404);
     if(!ownerAuthorized(request,env,now))return response({error:'Owner sign-in required.'},401);

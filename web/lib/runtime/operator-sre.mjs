@@ -3,6 +3,8 @@ const causes = new Map([
     'Space out optional research calls and coalesce duplicate client requests.']],
   ['throttle_general_admission', ['The general application admission limiter rejected this request.',
     'Check client retry intervals and request concurrency before adjusting limits.']],
+  ['throttle_access_admission', ['A private access request reached its admission limit.',
+    'Check access request and approval polling intervals independently of market traffic.']],
   ['throttle_runtime_disabled', ['The runtime disabled application work.',
     'Inspect the service cost-control state and backend health before re-enabling work.']],
   ['throttle_daily_work', ['The daily application work allowance was reached.',
@@ -23,6 +25,7 @@ const routes = new Set([
   '/api/workspace/history', '/api/workspace/graphql', '/api/workspace/research', '/api/workspace/execution-research',
   '/api/workspace/position-review', '/api/workspace/opinions', '/api/workspace/recommendations',
   '/api/workspace/search', '/api/workspace/evidence', '/api/workspace/evidence/search',
+  '/api/internal/access-requests',
   '/internal/diagnostics', '/internal/assistant/reserve', '/internal/assistant/reserve-azure',
   '/internal/assistant/read', '/internal/assistant/read-azure', '/internal/assistant/settle', '/mcp',
 ]);

@@ -60,7 +60,7 @@ test('only the originating browser can enter after an authenticated owner approv
   assert.deepEqual(await visitor.json(),{status:'pending'});
   const before=await call('request/status',undefined,{cookie:receipt,options});
   assert.deepEqual(await before.json(),{status:'pending'});
-  assert.equal(await cookiePair(before.headers,SHARE_COOKIE),undefined);
+  assert.deepEqual(before.headers.getSetCookie(),[]);
   const unauthenticated=await call('manage',{action:'list'},{cookie:receipt,options});
   assert.equal(unauthenticated.status,401);
   assert.equal(forwarded,2);
@@ -77,6 +77,7 @@ test('only the originating browser can enter after an authenticated owner approv
   assert.equal((await call('manage',{action:'decide',id:requests[0].id,decision:'approved'},{cookie:owner,options})).status,200);
   const differentBrowser=await call('request/status',undefined,{options});
   assert.deepEqual(await differentBrowser.json(),{status:'missing'});
+  assert.deepEqual(differentBrowser.headers.getSetCookie(),[]);
   const forgedReceipt=await call('request/status',undefined,{cookie:receipt+'x',options});
   assert.deepEqual(await forgedReceipt.json(),{status:'missing'});
   const entry=await call('request/status',undefined,{cookie:receipt,options});
@@ -97,6 +98,59 @@ test('only the originating browser can enter after an authenticated owner approv
   assert.equal(missingExpiry.status,503);
   assert.equal(cookiePair(missingExpiry.headers,SHARE_COOKIE),undefined);
   assert.equal(forwarded,7);
+});
+
+test('a change to the share verifier invalidates the old receipt before any storage access',async()=>{
+  const now=Date.parse('2026-11-11T12:00:00Z');
+  const visitor={name:'Example Visitor',email:'visitor@example.test'};
+  const receiptName='__Host-predictir-access-receipt';
+  let receiptHash;
+  const requestOptions={now,fetcher:async(url,init)=>{
+    receiptHash=JSON.parse(init.body).receiptHash;
+    return Response.json({status:'pending'},{status:202});
+  }};
+  const initial=await call('request',visitor,{options:requestOptions});
+  assert.equal(initial.status,202);
+  const priorReceipt=cookiePair(initial.headers,receiptName);
+
+  const rotated={...env,PREDICTIR_SHARE_TOKEN_HASH:hash('rotated-share-fixture')};
+  let forwarded=0;
+  const statusOptions={env:rotated,now,fetcher:async(url,init)=>{
+    forwarded++;
+    assert.equal(JSON.parse(init.body).receiptHash,receiptHash);
+    return Response.json({status:'approved',sessionExpiresAt:now/1000+SHARE_COOKIE_SECONDS});
+  }};
+  const rejected=await call('request/status',undefined,{cookie:priorReceipt,options:statusOptions});
+  assert.deepEqual(await rejected.json(),{status:'missing'});
+  assert.equal(forwarded,0);
+  assert.equal(cookiePair(rejected.headers,receiptName),receiptName+'=');
+  assert.match(rejected.headers.getSetCookie()[0],/Max-Age=0$/);
+  assert.equal(cookiePair(rejected.headers,SHARE_COOKIE),undefined);
+
+  const current=await call('request',visitor,{cookie:priorReceipt,options:{...requestOptions,env:rotated}});
+  assert.equal(current.status,202);
+  const currentReceipt=cookiePair(current.headers,receiptName);
+  assert.notEqual(currentReceipt,priorReceipt);
+  const accepted=await call('request/status',undefined,{cookie:currentReceipt,options:statusOptions});
+  assert.equal(accepted.status,204);
+  assert.equal(forwarded,1);
+  assert.equal(shareCookieAuthorized(cookiePair(accepted.headers,SHARE_COOKIE),rotated,now),true);
+});
+
+test('a receipt with no stored request is cleared without issuing a new one',async()=>{
+  const receiptName='__Host-predictir-access-receipt';
+  const options={fetcher:async(url,init)=>{
+    const action=JSON.parse(init.body).action;
+    return action==='request'
+      ? Response.json({status:'pending'},{status:202})
+      : Response.json({status:'missing'});
+  }};
+  const created=await call('request',{name:'Example Visitor',email:'visitor@example.test'},{options});
+  const receipt=cookiePair(created.headers,receiptName);
+  const status=await call('request/status',undefined,{cookie:receipt,options});
+  assert.deepEqual(await status.json(),{status:'missing'});
+  assert.equal(cookiePair(status.headers,receiptName),receiptName+'=');
+  assert.match(status.headers.getSetCookie()[0],/Max-Age=0$/);
 });
 
 test('requests are closed when disabled and reject cross-site or oversized input without reaching storage',async()=>{

@@ -3,10 +3,15 @@
 import {useEffect,useRef,useState} from 'react';
 import type {CSSProperties,FormEvent} from 'react';
 import AccessChallenge from './AccessChallenge';
+import {retryAfterMilliseconds} from '../../lib/transport.mjs';
 
 type AccessStatus='approved'|'pending'|'missing'|'declined';
 type AccessScreen='checking'|'request'|'pending'|'declined'|'link';
 type EntryResult={status:AccessStatus;notice?:string};
+
+class AccessStatusThrottled extends Error {
+  constructor(readonly retryAfterMs:number){super('Access status throttled');}
+}
 
 const inputStyle:CSSProperties={width:'100%',boxSizing:'border-box',background:'#080808',color:'#f5f5f5',border:'1px solid #505050',borderRadius:8,padding:'12px',font:'inherit',minHeight:44};
 const buttonStyle:CSSProperties={width:'100%',minHeight:44,border:'1px solid #f5f5f5',borderRadius:8,padding:'10px 14px',background:'#f5f5f5',color:'#101010',font:'inherit',fontWeight:600};
@@ -22,6 +27,7 @@ function postAccess(path:string,body?:Record<string,string>){
 async function readStatus():Promise<AccessStatus>{
   const response=await postAccess('request/status');
   if(response.status===204)return 'approved';
+  if(response.status===429)throw new AccessStatusThrottled(retryAfterMilliseconds(response.headers.get('retry-after'),{fallback:60000,maximum:86400000}));
   if(response.status!==200)throw new Error('Access status unavailable');
   const {status}=await response.json();
   if(status==='pending'||status==='missing'||status==='declined')return status;
@@ -89,14 +95,17 @@ export default function Access({requestsEnabled=false,challengeSiteKey=null}:{re
     const fastPollUntil=Date.now()+60000;
     let active=true;
     let inFlight=false;
+    let retryAt=0;
     let timer:ReturnType<typeof setTimeout>|undefined;
 
     function schedule(){
-      if(active&&document.visibilityState==='visible')timer=setTimeout(()=>void check(),Date.now()<fastPollUntil?5000:15000);
+      const now=Date.now();
+      if(active&&document.visibilityState==='visible')timer=setTimeout(()=>void check(),Math.max(now<fastPollUntil?5000:15000,retryAt-now));
     }
 
     async function check(){
       if(!active||inFlight||document.visibilityState!=='visible')return;
+      if(Date.now()<retryAt){schedule();return;}
       inFlight=true;
       try{
         const status=await readStatus();
@@ -110,8 +119,9 @@ export default function Access({requestsEnabled=false,challengeSiteKey=null}:{re
           return;
         }
         setNotice('');
-      }catch{
-        if(active)setNotice('Could not check your request. We’ll try again shortly.');
+      }catch(error){
+        if(error instanceof AccessStatusThrottled)retryAt=Date.now()+error.retryAfterMs;
+        if(active)setNotice(error instanceof AccessStatusThrottled?'Access checks are paused briefly. We’ll retry automatically.':'Could not check your request. We’ll try again shortly.');
       }finally{
         inFlight=false;
         schedule();
