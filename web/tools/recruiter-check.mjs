@@ -492,7 +492,8 @@ async function main() {
   const playwright = await check('browser dependencies', () => process.env.PREDICTIR_PLAYWRIGHT_DIR
     ? createRequire(join(process.env.PREDICTIR_PLAYWRIGHT_DIR, 'package.json'))('playwright')
     : import('playwright'));
-  const browser = await check('Chromium launch', () => playwright.chromium.launch());
+  const channel = process.env.PREDICTIR_CANARY_BROWSER === 'chrome' ? 'chrome' : undefined;
+  const browser = await check('Chromium launch', () => playwright.chromium.launch({channel}));
   const results = { public: [], cold: [], warm: [] };
   const stages = [];
   const capture = async (mode, run) => {

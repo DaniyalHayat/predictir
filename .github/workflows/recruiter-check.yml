@@ -39,11 +39,16 @@ jobs:
       - uses: actions/setup-node@v7
         with:
           node-version: '26.12.1'
-      - name: Install pinned browser tooling
+      - name: Prepare browser tooling
         id: browser_setup
+        timeout-minutes: 3
         run: |
-          npm install --prefix "$RUNNER_TEMP/predictir-browser" --no-save --no-package-lock --ignore-scripts playwright@1.61.1
-          "$RUNNER_TEMP/predictir-browser/node_modules/.bin/playwright" install --with-deps chromium
+          npm install --prefix "$RUNNER_TEMP/predictir-browser" --no-save --no-package-lock --ignore-scripts --no-audit --no-fund --fetch-retries=1 --fetch-timeout=45000 playwright@1.61.1
+          if command -v google-chrome >/dev/null; then
+            echo 'PREDICTIR_CANARY_BROWSER=chrome' >> "$GITHUB_ENV"
+          else
+            "$RUNNER_TEMP/predictir-browser/node_modules/.bin/playwright" install --only-shell chromium
+          fi
       - name: Check the canonical public gate and configured private journey
         id: canonical_check
         if: matrix.host == 'canonical'
