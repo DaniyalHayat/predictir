@@ -22,6 +22,12 @@ variable "enable_database_readiness_alert" {
   default     = false
 }
 
+variable "enable_runtime_metric_alert" {
+  description = "Enable one Azure Monitor metric series for sustained backend memory pressure. Budget $0.10/month above the free metric-series allowance."
+  type        = bool
+  default     = false
+}
+
 variable "database_readiness_action_group_id" {
   description = "Optional existing Azure Monitor action group for readiness notifications. Without one, alert state is available in Azure Monitor."
   type        = string

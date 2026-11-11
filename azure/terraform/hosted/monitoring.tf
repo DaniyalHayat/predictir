@@ -96,6 +96,28 @@ resource "azurerm_monitor_scheduled_query_rules_alert_v2" "database_readiness" {
   depends_on = [azurerm_role_assignment.readiness_alert_logs, azurerm_monitor_diagnostic_setting.runtime]
 }
 
+resource "azurerm_monitor_metric_alert" "backend_memory" {
+  count = local.runtime_metric_alert ? 1 : 0
+
+  name                = "${var.name_prefix}-backend-memory"
+  description         = "Average backend memory usage above 80 percent of its Container Apps replica limit for 15 minutes."
+  resource_group_name = azurerm_resource_group.edition[0].name
+  scopes              = [azurerm_container_app.backend[0].id]
+  frequency           = "PT5M"
+  window_size         = "PT15M"
+  severity            = 2
+  auto_mitigate       = true
+  tags                = local.tags
+
+  criteria {
+    metric_namespace = "Microsoft.App/containerapps"
+    metric_name      = "MemoryPercentage"
+    aggregation      = "Average"
+    operator         = "GreaterThan"
+    threshold        = 80
+  }
+}
+
 locals {
   operations_queries = [
     { title = "API latency and errors · last 24 hours", file = "request-latency.kql" },

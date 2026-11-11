@@ -77,6 +77,7 @@ run "replay_keeps_streaming_only_when_saved_logs_are_selected" {
     azure_enabled                   = true
     enable_saved_logs               = true
     enable_database_readiness_alert = true
+    enable_runtime_metric_alert     = true
   }
 
   assert {
@@ -86,6 +87,7 @@ run "replay_keeps_streaming_only_when_saved_logs_are_selected" {
       output.saved_logs == null &&
       output.operations == null &&
       length(azurerm_monitor_scheduled_query_rules_alert_v2.database_readiness) == 0 &&
+      length(azurerm_monitor_metric_alert.backend_memory) == 0 &&
       length(azurerm_log_analytics_workspace.runtime) == 0 &&
       length(azurerm_monitor_diagnostic_setting.runtime) == 0
     )
@@ -385,6 +387,7 @@ run "live_runtime_uses_referenced_secrets" {
     live_database_ready             = true
     enable_saved_logs               = true
     enable_database_readiness_alert = true
+    enable_runtime_metric_alert     = true
     spend_approval = {
       approved_monthly_usd     = 25
       reviewed_monthly_usd     = 25
@@ -434,7 +437,12 @@ run "live_runtime_uses_referenced_secrets" {
       contains(azurerm_monitor_scheduled_query_rules_alert_v2.database_readiness[0].scopes, azurerm_log_analytics_workspace.runtime[0].id) &&
       azurerm_role_assignment.readiness_alert_logs[0].scope == azurerm_log_analytics_workspace.runtime[0].id &&
       azurerm_role_assignment.readiness_alert_logs[0].role_definition_name == "Log Analytics Reader" &&
-      output.operations.monthly_alert_usd == 0.5
+      length(azurerm_monitor_metric_alert.backend_memory) == 1 &&
+      length(azurerm_monitor_metric_alert.backend_memory[0].scopes) == 1 &&
+      one(azurerm_monitor_metric_alert.backend_memory[0].criteria).metric_name == "MemoryPercentage" &&
+      one(azurerm_monitor_metric_alert.backend_memory[0].criteria).threshold == 80 &&
+      length(one(azurerm_monitor_metric_alert.backend_memory[0].criteria).dimension) == 0 &&
+      output.operations.monthly_alert_usd == 0.6
     )
     error_message = "The opt-in readiness alert must use the existing workspace, a scoped identity, and the 15-minute billing tier."
   }

@@ -22,11 +22,12 @@ output "saved_logs" {
 }
 
 output "operations" {
-  description = "Portal resource IDs for the Predictir workbook and optional database readiness alert."
-  value = local.saved_logs && local.apps ? {
-    workbook_id        = azurerm_application_insights_workbook.operations[0].id
-    readiness_alert_id = local.readiness_alert ? azurerm_monitor_scheduled_query_rules_alert_v2.database_readiness[0].id : null
-    monthly_alert_usd  = local.readiness_alert_usd
+  description = "Portal resource IDs for the Predictir workbook and optional runtime alerts."
+  value = (local.saved_logs && local.apps) || local.runtime_metric_alert ? {
+    workbook_id             = local.saved_logs && local.apps ? azurerm_application_insights_workbook.operations[0].id : null
+    readiness_alert_id      = local.readiness_alert ? azurerm_monitor_scheduled_query_rules_alert_v2.database_readiness[0].id : null
+    backend_memory_alert_id = local.runtime_metric_alert ? azurerm_monitor_metric_alert.backend_memory[0].id : null
+    monthly_alert_usd       = local.readiness_alert_usd + local.runtime_metric_alert_usd
   } : null
 }
 
