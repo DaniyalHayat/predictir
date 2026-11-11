@@ -1,4 +1,5 @@
 name: Recruiter browser check
+run-name: Recruiter browser check (${{ github.event_name == 'schedule' && 'both' || inputs.host || 'canonical' }})
 
 on:
   schedule:
@@ -13,6 +14,7 @@ on:
 
 permissions:
   contents: read
+  actions: read
 
 concurrency:
   group: predictir-recruiter-browser-check
@@ -24,6 +26,13 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 12
     environment: predictir-monitor
+    strategy:
+      fail-fast: false
+      matrix:
+        host: ${{ github.event_name == 'schedule' && fromJSON('["canonical","azure"]') || fromJSON(format('["{0}"]', inputs.host || 'canonical')) }}
+    env:
+      PREDICTIR_CANARY_HOST: ${{ matrix.host }}
+      PREDICTIR_REQUIRE_DEDICATED_CANARY: '1'
     steps:
       - uses: actions/checkout@v7
         with:
@@ -32,23 +41,45 @@ jobs:
         with:
           node-version: '26.12.1'
       - name: Install pinned browser tooling
+        id: browser_setup
         run: |
           npm install --prefix "$RUNNER_TEMP/predictir-browser" --no-save --no-package-lock --ignore-scripts playwright@1.61.1
           "$RUNNER_TEMP/predictir-browser/node_modules/.bin/playwright" install --with-deps chromium
       - name: Check the canonical public gate and configured private journey
-        if: inputs.host != 'azure'
+        id: canonical_check
+        if: matrix.host == 'canonical'
         env:
           PREDICTIR_CANARY_PUBLIC_URL: ${{ vars.PREDICTIR_CANARY_PUBLIC_URL }}
           PREDICTIR_CANARY_URL: ${{ secrets.PREDICTIR_CANARY_URL }}
           PREDICTIR_CANARY_REQUEST_FORM: '1'
           PREDICTIR_PLAYWRIGHT_DIR: ${{ runner.temp }}/predictir-browser
+          PREDICTIR_CANARY_RESULTS_FILE: ${{ runner.temp }}/predictir-canary-result.json
         run: node web/tools/recruiter-check.mjs
       - name: Check the Azure public gate and configured private journey
-        if: inputs.host == 'azure'
+        id: azure_check
+        if: matrix.host == 'azure'
         env:
           PREDICTIR_CANARY_PUBLIC_URL: ${{ vars.PREDICTIR_AZURE_CANARY_PUBLIC_URL }}
           PREDICTIR_CANARY_URL: ${{ secrets.PREDICTIR_AZURE_CANARY_URL }}
           PREDICTIR_PLAYWRIGHT_DIR: ${{ runner.temp }}/predictir-browser
+          PREDICTIR_CANARY_RESULTS_FILE: ${{ runner.temp }}/predictir-canary-result.json
         run: |
           test -n "$PREDICTIR_CANARY_PUBLIC_URL" || { echo 'Configure the Azure public origin before running this check.'; exit 1; }
           node web/tools/recruiter-check.mjs
+      - name: Summarize the last 30 days
+        if: ${{ !cancelled() }}
+        id: canary_history
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PREDICTIR_CANARY_OUTCOME: ${{ steps.browser_setup.outcome == 'failure' && 'failure' || (matrix.host == 'azure' && steps.azure_check.outcome || steps.canonical_check.outcome) }}
+          PREDICTIR_CANARY_RESULTS_FILE: ${{ runner.temp }}/predictir-canary-result.json
+        run: node web/tools/recruiter-history.mjs
+      - name: Keep the bounded history checkpoint
+        if: ${{ !cancelled() && steps.canary_history.outcome == 'success' }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: predictir-recruiter-history-v1-${{ matrix.host }}
+          path: ${{ runner.temp }}/recruiter-history.json
+          if-no-files-found: ignore
+          retention-days: 30
+          overwrite: true

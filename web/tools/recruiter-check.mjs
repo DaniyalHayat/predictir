@@ -1,13 +1,18 @@
 import assert from 'node:assert/strict';
-import { appendFile, mkdir } from 'node:fs/promises';
+import { appendFile, mkdir, writeFile } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import { join } from 'node:path';
+import { executionCurve } from '../lib/workspace/execution-curve.mjs';
 
 const TIMEOUT = 30000;
 const QUOTE_MAX_SECONDS = 90;
 const VIEWPORT = { width: 1600, height: 1000 };
+const ASSISTANT_MODES = new Set(['deterministic-contract-brief', 'azure-deterministic', 'azure-foundry']);
+const ASSISTANT_TRANSPORTS = new Set(['MCP Streamable HTTP', 'MCP In-Process']);
+const DEGRADED_ANSWER = /research did not load|did not return usable depth or outcome data|assistant (?:is temporarily unavailable|returned no explanation)|research connection was interrupted|could not reach its research service/i;
 const MEASURES = {
   entry_ms: 'Navigation to private gate',
+  workspace_entry_ms: 'Private link or session to workspace',
   catalog_ms: 'Navigation to first catalog rows',
   contract_ms: 'Select contract to matching detail',
   quote_ms: 'Select contract to usable quote',
@@ -16,6 +21,7 @@ const MEASURES = {
   ask_complete_ms: 'Ask Why to complete answer',
   paper_tab_ms: 'Open paper-position view',
   paper_entry_ms: 'Record one browser-local paper contract',
+  paper_book_age_s: 'Executable entry book age (seconds)',
   portfolio_ms: 'Open My Trades to ledger read',
   journey_ms: 'Full browser journey'
 };
@@ -49,10 +55,31 @@ function configuration() {
   }
   const pairs = Number(process.env.PREDICTIR_CANARY_PAIRS || 1);
   assert.ok(Number.isInteger(pairs) && pairs >= 1 && pairs <= 3);
-  return { publicUrl, privateUrl, pairs, demo: process.env.PREDICTIR_DEMO_DIR, requestForm: process.env.PREDICTIR_CANARY_REQUEST_FORM === '1' };
+  const host = process.env.PREDICTIR_CANARY_HOST || 'canonical';
+  assert.ok(['canonical', 'azure'].includes(host));
+  const requireDedicatedCanary = process.env.PREDICTIR_REQUIRE_DEDICATED_CANARY === '1';
+  if (requireDedicatedCanary) {
+    const matched = host === 'azure' ? publicUrl.hostname.endsWith('.azurecontainerapps.io') && !publicUrl.port
+      : publicUrl.origin === 'https://predictir.dev';
+    if (!matched) throw new CheckFailure('configured host does not match the monitored deployment');
+  }
+  return { publicUrl, privateUrl, pairs, host, demo: process.env.PREDICTIR_DEMO_DIR, requestForm: process.env.PREDICTIR_CANARY_REQUEST_FORM === '1',
+    requireDedicatedCanary };
 }
 
 const elapsed = started => Math.round(performance.now() - started);
+const normalize = text => text.normalize('NFKC').trim().replace(/\s+/g, ' ').toLowerCase();
+
+function verifyAnswer(text, { ticker, title }) {
+  const heading = normalize(text.split('\n').find(line => line.trim()) || '');
+  const baseTitle = normalize(title.split(' · ')[0]);
+  assert.ok(text.includes(ticker) || heading === baseTitle || heading === normalize(title));
+  assert.doesNotMatch(text, DEGRADED_ANSWER);
+  const pricedEvidence = /\b\d+(?:[.,]\d+)?\s*(?:%|¢|contracts?\b)/i.test(text) &&
+    /\b(?:ask|bid|probabilit\w*|chance|fees?|midpoint|payout|settlement)\b/i.test(text);
+  const ruleEvidence = /\b(?:settlement rule|resolves to yes|pays (?:if|when))\b[^\n]{20,}/i.test(text);
+  assert.ok(pricedEvidence || ruleEvidence);
+}
 
 async function verifyPublicGate(browser, { publicUrl, requestForm }) {
   const context = await browser.newContext({ viewport: VIEWPORT });
@@ -82,12 +109,15 @@ async function verifyPublicGate(browser, { publicUrl, requestForm }) {
   }
 }
 
-async function openPrivatePage(page, { publicUrl, privateUrl }, isCold) {
+async function openPrivatePage(page, { publicUrl, privateUrl, requireDedicatedCanary }, isCold) {
   const target = isCold ? privateUrl : publicUrl;
   await page.goto(target.href, { waitUntil: 'domcontentloaded', timeout: TIMEOUT });
   await page.waitForURL(publicUrl.href, { waitUntil: 'domcontentloaded', timeout: TIMEOUT });
   const cookies = await page.context().cookies(publicUrl.href);
-  const cookie = cookies.find(item => ['__Host-predictir-canary', '__Host-predictir-share'].includes(item.name));
+  const dedicated = cookies.find(item => item.name === '__Host-predictir-canary');
+  const share = cookies.find(item => item.name === '__Host-predictir-share');
+  if (requireDedicatedCanary && (!dedicated || share)) throw new CheckFailure('dedicated hosted canary credential required');
+  const cookie = dedicated || share;
   assert.ok(cookie?.httpOnly && cookie.secure && cookie.path === '/');
 }
 
@@ -117,6 +147,7 @@ async function journey(page, settings, { cold = false, demo = false, priorPositi
   try {
     await check(cold ? 'private link redemption' : 'warm authenticated navigation',
       () => openPrivatePage(page, settings, cold));
+    mark('workspace_entry_ms');
     const marketList = page.getByRole('region', { name: 'Market list', exact: true });
     const rows = marketList.locator('[data-market-ticker]');
     const selected = page.getByTestId('selected-ticker');
@@ -127,7 +158,7 @@ async function journey(page, settings, { cold = false, demo = false, priorPositi
     });
     await clip('1 / 4 · Live market catalog');
 
-    const ticker = await check('matching contract details and quote', async () => {
+    const selection = await check('matching contract details and quote', async () => {
       const initiallySelected = await selected.textContent();
       const other = rows.filter({ has: page.locator('button.market-select:not([aria-current])') });
       const row = (await other.count()) ? other.first() : rows.first();
@@ -141,18 +172,21 @@ async function journey(page, settings, { cold = false, demo = false, priorPositi
       if ((await rows.count()) > 1) assert.notEqual(chosen, initiallySelected);
       mark('contract_ms', selectedAt);
       const age = await page.waitForFunction(maximum => {
-        const state = document.querySelector('.quote-strip .stream-state small')?.textContent || '';
-        const ask = document.querySelector('.quote-strip .yes-price')?.textContent || '';
-        const no = document.querySelector('.quote-strip .no-price')?.textContent || '';
+        const indicator = document.querySelector('.quote-strip .stream-state');
+        if (!indicator?.querySelector('.status-dot:not(.delayed)')) return false;
+        const state = indicator.querySelector('small')?.textContent || '';
+        const parse = selector => Number(document.querySelector(selector)?.textContent?.match(/^(\d+(?:\.\d+)?)¢$/)?.[1]);
+        const ask = parse('.quote-strip .yes-price'), no = parse('.quote-strip .no-price');
         const seconds = state.match(/^(\d+)s since observation$/)?.[1];
         const age = seconds === undefined ? NaN : Number(seconds);
-        return Number.isFinite(age) && age <= maximum && /\d/.test(ask) && /\d/.test(no) ? { age } : false;
+        return Number.isFinite(age) && age < maximum && ask > 0 && ask < 100 && no > 0 && no < 100 && ask + no >= 99.99 ? { age } : false;
       }, QUOTE_MAX_SECONDS, { timeout: TIMEOUT });
       metrics.quote_age_s = (await age.jsonValue()).age;
       await age.dispose();
       mark('quote_ms', selectedAt);
-      return chosen;
+      return { ticker: chosen, title };
     });
+    const { ticker } = selection;
     await clip('2 / 4 · Selected contract and current bid/ask depth');
 
     await check('Ask Why answer', async () => {
@@ -162,25 +196,38 @@ async function journey(page, settings, { cold = false, demo = false, priorPositi
         const url = new URL(response.url());
         if (url.origin !== settings.publicUrl.origin || url.pathname !== '/api/assistant' || request.method() !== 'POST') return false;
         try {
-          return request.postDataJSON()?.ticker === ticker;
+          const input = request.postDataJSON();
+          return input?.ticker === ticker && input?.panel === 'analysis' && input?.detail === 'full' && input?.messages?.length === 1;
         } catch {
           return false;
         }
       }, { timeout: 65000 });
       const answerVisible = page.locator('.assistant-transcript .answer').first();
-      await Promise.all([
+      const [, , response] = await Promise.all([
         check('Ask Why control', () => page.getByRole('button', { name: 'Ask why about this contract', exact: true }).click()),
         check('Ask Why rendered answer', () => answerVisible.waitFor({ timeout: 65000 }).then(() => mark('ask_first_ms', askedAt))),
         check('Ask Why selected-contract request', async () => {
           const response = await answerResponse;
           if (!response.ok()) throw new CheckFailure(`Ask Why HTTP ${response.status()}`);
           if (!/text\/plain/i.test(response.headers()['content-type'] || '')) throw new CheckFailure('Ask Why stream content type');
+          const headers = response.headers();
+          const mode = headers['x-research-model'], transport = headers['x-research-transport'];
+          if (!ASSISTANT_MODES.has(mode) || !ASSISTANT_TRANSPORTS.has(transport)) throw new CheckFailure('Ask Why response provenance');
+          if (settings.requireDedicatedCanary) {
+            const expected = settings.host === 'azure' ? 'azure-deterministic' : 'deterministic-contract-brief';
+            if (mode !== expected || settings.host === 'canonical' && transport !== 'MCP Streamable HTTP')
+              throw new CheckFailure('Ask Why response does not match the monitored deployment');
+          }
+          metrics.assistant_mode = mode;
+          metrics.assistant_transport = transport;
+          return response;
         })
       ]);
       await check('Ask Why completed stream', () => page.getByText('Answer ready', { exact: true }).waitFor({ timeout: 65000 }));
-      assert.equal(await page.locator('.assistant-identity code').textContent(), ticker);
-      assert.ok((await answerVisible.innerText()).trim().length >= 40);
       mark('ask_complete_ms', askedAt);
+      assert.equal(await page.locator('.assistant-identity code').textContent(), ticker);
+      assert.ok((await answerVisible.locator('.answer-lead').innerText()).trim().length >= 40);
+      await check('Ask Why contract and substantive evidence', async () => verifyAnswer(await response.text(), selection));
     });
     await clip('3 / 4 · Ask Why: actual response for the selected contract');
     if (demo) {
@@ -204,8 +251,20 @@ async function journey(page, settings, { cold = false, demo = false, priorPositi
         await guest.dispose();
         await page.getByLabel('Paper contracts', { exact: true }).fill('1');
         const enteredAt = performance.now();
-        await page.getByRole('button', { name: 'Record paper buy', exact: true }).click();
-        await page.getByText(/^Recorded 1 paper contract/).waitFor({ timeout: TIMEOUT });
+        const [entry] = await Promise.all([
+          page.waitForResponse(response => {
+            const url = new URL(response.url());
+            return url.origin === settings.publicUrl.origin && url.pathname === '/api/book' &&
+              url.searchParams.get('ticker') === ticker && url.searchParams.get('contracts') === '1' && response.request().method() === 'GET';
+          }, { timeout: TIMEOUT }),
+          page.getByRole('button', { name: 'Record paper buy', exact: true }).click(),
+          page.getByText(/^Recorded 1 paper contract/).waitFor({ timeout: TIMEOUT })
+        ]);
+        assert.ok(entry.ok());
+        const book = await entry.json();
+        const now = Date.now();
+        assert.ok(executionCurve(book, ticker, 'yes', 'buy', { now }).quote(1).complete);
+        metrics.paper_book_age_s = Math.max(0, Math.floor((now - Date.parse(book.as_of)) / 1000));
         const id = await page.evaluate(expected => {
           const ledger = JSON.parse(localStorage.getItem('predictir:paper-journal:v1') || 'null');
           const position = ledger?.positions.find(row => row.ticker === expected && row.remaining_quantity === 1);
@@ -233,6 +292,9 @@ async function journey(page, settings, { cold = false, demo = false, priorPositi
       await page.waitForFunction(id => [...(document.querySelector(`[data-position-id="${id}"]`)?.querySelectorAll('.position-values > div') || [])]
         .some(value => value.querySelector('span')?.textContent === 'Net exit value' && /\d/.test(value.querySelector('strong')?.textContent || '')),
         positionId, { timeout: TIMEOUT });
+      const exit = position.getByRole('button', { name: 'Close at bids', exact: true });
+      await exit.waitFor({ timeout: TIMEOUT });
+      assert.ok(await exit.isEnabled());
       metrics.ledger = 'position read';
       mark('portfolio_ms', openedAt);
     });
@@ -279,13 +341,14 @@ function sampleCell(values, percentile, minimum) {
   return values[Math.ceil(percentile * values.length) - 1];
 }
 
-async function report(results, authenticated, stages) {
+async function report(results, { host, privateUrl }, stages) {
+  const authenticated = Boolean(privateUrl);
   const lines = [
     '# Predictir recruiter check',
     '',
     `Authenticated coverage: ${authenticated ? 'enabled' : 'skipped (no configured link)'}`,
     'Cold means a new browser context and link redemption. Warm reuses the same browser session and cookies. Azure scale-to-zero is not inferred from browser state.',
-    'Quote age is read from the UI and the check requires two displayed asks with age ≤90 seconds.',
+    'The UI must show an open, two-sided quote younger than 90 seconds. The paper entry also checks a matching executable book from the server.',
     'Tail percentiles use nearest rank and require at least 20 p95 samples or 100 p99 samples. Samples below those counts are shown as insufficient.',
     '',
     '| Mode | Measure | n | Min | Max | p95 | p99 |',
@@ -301,11 +364,18 @@ async function report(results, authenticated, stages) {
   for (const mode of ['cold', 'warm']) {
     const count = results[mode].filter(row => row.ledger === 'position read').length;
     if (count) lines.push('', `${mode} paper position reads with a current exit mark: ${count}`);
+    for (const researchMode of new Set(results[mode].map(row => row.assistant_mode))) {
+      const matched = results[mode].filter(row => row.assistant_mode === researchMode);
+      lines.push(`${mode} Ask Why (${researchMode}, ${[...new Set(matched.map(row => row.assistant_transport))].join(' / ')}): ${matched.length}`);
+    }
   }
   if (stages.length) lines.push('', ...stages.map(stage => `Failed check: ${stage}`));
   const summary = lines.join('\n') + '\n';
   process.stdout.write(summary);
   if (process.env.GITHUB_STEP_SUMMARY) await appendFile(process.env.GITHUB_STEP_SUMMARY, summary);
+  if (process.env.PREDICTIR_CANARY_RESULTS_FILE) {
+    await writeFile(process.env.PREDICTIR_CANARY_RESULTS_FILE, JSON.stringify({ schema: 1, measured_at: new Date().toISOString(), host, authenticated, results, failed_count: stages.length }));
+  }
 }
 
 async function main() {
@@ -334,6 +404,7 @@ async function main() {
       return;
     }
     await capture('public', () => verifyPublicGate(browser, settings));
+    if (settings.requireDedicatedCanary && !settings.privateUrl) stages.push('private · dedicated hosted canary credential is missing');
     if (settings.privateUrl) {
       for (let i = 0; i < settings.pairs; i++) {
         const context = await browser.newContext({ viewport: VIEWPORT });
@@ -351,7 +422,7 @@ async function main() {
   } finally {
     await browser.close();
   }
-  await report(results, Boolean(settings.privateUrl), stages);
+  await report(results, settings, stages);
   if (stages.length) process.exitCode = 1;
 }
 
