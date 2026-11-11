@@ -1,4 +1,5 @@
 import {createHash,createHmac,timingSafeEqual} from 'node:crypto';
+import {accessIngress} from './workspace/access-ingress.mjs';
 
 export const SHARE_COOKIE='__Host-predictir-share';
 export const SHARE_COOKIE_SECONDS=86400;
@@ -92,8 +93,8 @@ export function issueShareCookie(env=process.env,now=Date.now(),kind='share'){
   const encoded=Buffer.from(JSON.stringify({v:1,h:config.hash,exp:Math.floor(now/1000)+config.seconds})).toString('base64url');
   return config.cookie+'='+encoded+'.'+signature(encoded,config.key,kind)+'; Path=/; Secure; HttpOnly; SameSite=Lax; Max-Age='+config.seconds;
 }
-function allowance(request,env,now){
-  const slot=Math.floor(now/60000),ip=request.headers.get('x-vercel-forwarded-for')?.split(',')[0]?.trim()||request.headers.get('x-forwarded-for')?.split(',')[0]?.trim()||'unknown';
+function allowance(ip,env,now){
+  const slot=Math.floor(now/60000);
   const fingerprint=createHmac('sha256',settings(env)?.key||'unconfigured').update('share-limit\0'+ip).digest('hex');
   for(const [key,value]of limits)if(value.slot!==slot)limits.delete(key);
   if(limits.size>4096&&!limits.has(fingerprint))return false;
@@ -104,17 +105,20 @@ function allowance(request,env,now){
   return true;
 }
 async function accessBody(request){
-  if(!String(request.headers.get('content-type')||'').toLowerCase().startsWith('application/json'))throw Object.assign(new Error(),{status:415});
+  if(request.headers.get('content-type')?.split(';')[0].trim().toLowerCase()!=='application/json')throw Object.assign(new Error(),{status:415});
   if(Number(request.headers.get('content-length')||0)>256)throw Object.assign(new Error(),{status:413});
   const reader=request.body?.getReader(),parts=[];let size=0;
   if(reader)try{while(true){const {value,done}=await reader.read();if(done)break;size+=value.length;if(size>256){await reader.cancel();throw Object.assign(new Error(),{status:413});}parts.push(value);}}finally{reader.releaseLock();}
   return JSON.parse(Buffer.concat(parts).toString('utf8'));
 }
-export async function redeemShareAccess(request,{env=process.env,now=Date.now()}={}){
+export async function redeemShareAccess(request,{env=process.env,now=Date.now(),countryLookup}={}){
   if(request.method!=='POST')return Response.json({error:'Use POST.'},{status:405,headers:PRIVATE_HEADERS});
   if(!shareAccessEnabled(env)||!settings(env))return Response.json({error:'Private access is not configured.'},{status:503,headers:PRIVATE_HEADERS});
-  if(!accessOriginAllowed(request,env)||new URL(request.url).search)return Response.json({error:'Open the private link directly.'},{status:403,headers:PRIVATE_HEADERS});
-  if(!allowance(request,env,now))return Response.json({error:'Too many attempts. Try again in one minute.'},{status:429,headers:{...PRIVATE_HEADERS,'Retry-After':'60'}});
+  if(!accessOriginAllowed(request,env)||request.headers.get('sec-fetch-site')==='cross-site'||new URL(request.url).search)return Response.json({error:'Open the private link directly.'},{status:403,headers:PRIVATE_HEADERS});
+  const regional=await accessIngress(request.headers,env,countryLookup);
+  if(regional.status!==200)return Response.json({error:'The access check could not be completed.'},{status:regional.status,headers:PRIVATE_HEADERS});
+  const ip=regional.ip||request.headers.get('x-forwarded-for')?.split(',')[0]?.trim()||'unknown';
+  if(!allowance(ip,env,now))return Response.json({error:'Too many attempts. Try again in one minute.'},{status:429,headers:{...PRIVATE_HEADERS,'Retry-After':'60'}});
   try{
     const value=await accessBody(request);
     if(!value||Object.keys(value).length!==1||typeof value.token!=='string'||!/^[A-Za-z0-9_-]{43,128}$/.test(value.token))return Response.json({error:'This private link is invalid or expired.'},{status:401,headers:PRIVATE_HEADERS});

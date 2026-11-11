@@ -1,10 +1,7 @@
 import {createHash,createHmac,randomBytes,timingSafeEqual} from 'node:crypto';
-import {isIP} from 'node:net';
 import {accessOriginAllowed,issueShareCookie,PRIVATE_HEADERS,shareAccessEnabled} from './private-access.mjs';
 import {readProxyBody} from './workspace/proxy.mjs';
-import {azureMode} from './workspace/azure-mode.mjs';
-import {azureAccess} from './workspace/azure-access.mjs';
-import {isCountryAllowed} from './workspace/geo.mjs';
+import {accessIngress} from './workspace/access-ingress.mjs';
 
 const receiptCookie='__Host-predictir-access-receipt';
 const ownerCookie='__Host-predictir-access-owner';
@@ -67,12 +64,10 @@ async function jsonBody(request,maxBytes){
 }
 
 async function backend(request,env,fetcher,data,regional){
-  const vercelIP=env.VERCEL==='1'?request.headers.get('x-vercel-forwarded-for')?.split(',')[0].trim():null;
-  const ip=regional?.ip||vercelIP;
-  const country=regional?.country||(env.VERCEL==='1'?request.headers.get('x-vercel-ip-country'):'US');
+  const {ip,country}=regional;
   const headers={'content-type':'application/json','x-market-edge-secret':env.MARKET_EDGE_SECRET};
-  if(ip&&isIP(ip))headers['x-market-client-ip']=ip;
-  if(country&&/^[A-Z]{2}$/.test(country))headers['x-market-country']=country;
+  if(ip)headers['x-market-client-ip']=ip;
+  headers['x-market-country']=country;
   const result=await fetcher(backendURL(env),{method:'POST',cache:'no-store',redirect:'error',
     headers,
     body:JSON.stringify(data),signal:AbortSignal.any([request.signal,AbortSignal.timeout(8500)])});
@@ -96,10 +91,8 @@ export async function handleAccessRequest(request,operation,{env=process.env,now
   if(request.method!=='POST')return response({error:'Use POST.'},405);
   if(!accessOriginAllowed(request,env)||request.headers.get('sec-fetch-site')==='cross-site'||new URL(request.url).search)
     return response({error:'Open this action from Predictir.'},403);
-  if(env.VERCEL==='1'&&!isCountryAllowed(request.headers.get('x-vercel-ip-country')))
-    return response({error:'Access is unavailable in your region.'},403);
-  const regional=azureMode(env.PREDICTIR_MODE)==='live'?await azureAccess(request.headers,countryLookup):null;
-  if(regional&&regional.status!==200)return response({error:'The access check could not be completed.'},regional.status);
+  const regional=await accessIngress(request.headers,env,countryLookup);
+  if(regional.status!==200)return response({error:'The access check could not be completed.'},regional.status);
 
   try{
     if(operation==='manage/sign-in'){
@@ -133,8 +126,7 @@ export async function handleAccessRequest(request,operation,{env=process.env,now
       if(typeof name!=='string'||typeof email!=='string'||!name.trim()||name.trim().length>100||
         /[\u0000-\u001f\u007f]/u.test(name)||email.trim().length>254||!/^[^\s@]+@[^\s@]+\.[^\s@]+$/u.test(email.trim()))
         return response({error:'Enter your name and a valid email address.'},400);
-      const platformIP=env.VERCEL==='1'?request.headers.get('x-vercel-forwarded-for')?.split(',')[0].trim():null;
-      const ip=regional?.ip||(platformIP&&isIP(platformIP)?platformIP:'unknown');
+      const ip=regional.ip||'unknown';
       const ipHash=createHmac('sha256',env.MARKET_EDGE_SECRET).update('predictir.access.ip\0'+ip).digest('hex');
       const result=await backend(request,env,fetcher,{action:'request',receiptHash,name:name.trim(),email:email.trim().toLowerCase(),ipHash},regional);
       if(result.status!==202)return providerFailure(result);

@@ -118,14 +118,19 @@ export function createAccessRequestsBackend({edgeSecret, env = process.env, now 
   }
 
   async function sendNotice(storage, day) {
-    if (!vapid) return;
+    const started = performance.now();
+    const report = (event, status, result) =>
+      log('access.' + event, {status, result, duration_ms: Math.round(performance.now() - started)}, {sample: false});
+    if (!vapid) return report('push_skipped', 200, 'disabled');
     try {
       const targets = await subscriptions(storage);
-      if (!targets.length || !await storage.consume('access-push#' + day, 24, 1, 2 * DAY)) return;
+      if (!targets.length) return report('push_skipped', 200, 'no_device');
+      if (!await storage.consume('access-push#' + day, 24, 1, 2 * DAY))
+        return report('push_skipped', 200, 'daily_limit');
       const results = await Promise.allSettled(targets.map(async target => {
         subscriptionEndpoint(target.endpoint);
         const outbound = generateRequestDetails(target, message, {
-          vapidDetails: vapid, TTL: 600, urgency: 'normal', topic: 'predictir-access',
+          vapidDetails: vapid, TTL: 600, urgency: 'high', topic: 'predictir-access',
         });
         const response = await fetcher(outbound.endpoint, {
           method: 'POST', headers: outbound.headers, body: outbound.body, redirect: 'error',
@@ -136,11 +141,16 @@ export function createAccessRequestsBackend({edgeSecret, env = process.env, now 
       }));
       const stale = results.filter(result => result.status === 'fulfilled' && [404, 410].includes(result.value.status))
         .map(result => result.value.target);
-      if (stale.length) await editSubscriptions(storage, rows => rows.filter(row =>
-        !stale.some(item => item.endpoint === row.endpoint && item.keys.p256dh === row.keys.p256dh && item.keys.auth === row.keys.auth)));
+      if (results.some(result => result.status === 'fulfilled' && result.value.status >= 200 && result.value.status < 300))
+        report('push_accepted', 200, 'provider_accepted');
       if (results.some(result => result.status === 'rejected' || result.value.status >= 400 && ![404, 410].includes(result.value.status)))
-        log('access.push_failed', {status: 503});
-    } catch { log('access.push_failed', {status: 503}); }
+        report('push_failed', 503, 'provider_failed');
+      if (stale.length) {
+        await editSubscriptions(storage, rows => rows.filter(row =>
+          !stale.some(item => item.endpoint === row.endpoint && item.keys.p256dh === row.keys.p256dh && item.keys.auth === row.keys.auth)));
+        report('push_stale', 200, 'subscription_removed');
+      }
+    } catch { report('push_failed', 503, 'delivery_failed'); }
   }
 
   async function status(storage, receiptHash) {

@@ -7,7 +7,6 @@ type AccessStatus='approved'|'pending'|'missing'|'declined';
 type AccessScreen='checking'|'request'|'pending'|'declined'|'link';
 type EntryResult={status:AccessStatus;notice?:string};
 
-const statusInterval=15000;
 const inputStyle:CSSProperties={width:'100%',boxSizing:'border-box',background:'#080808',color:'#f5f5f5',border:'1px solid #505050',borderRadius:8,padding:'12px',font:'inherit',minHeight:44};
 const buttonStyle:CSSProperties={width:'100%',minHeight:44,border:'1px solid #f5f5f5',borderRadius:8,padding:'10px 14px',background:'#f5f5f5',color:'#101010',font:'inherit',fontWeight:600};
 
@@ -84,12 +83,13 @@ export default function Access({requestsEnabled=false}:{requestsEnabled?:boolean
 
   useEffect(()=>{
     if(screen!=='pending')return;
+    const fastPollUntil=Date.now()+60000;
     let active=true;
     let inFlight=false;
     let timer:ReturnType<typeof setTimeout>|undefined;
 
     function schedule(){
-      if(active&&document.visibilityState==='visible')timer=setTimeout(()=>void check(),statusInterval);
+      if(active&&document.visibilityState==='visible')timer=setTimeout(()=>void check(),Date.now()<fastPollUntil?5000:15000);
     }
 
     async function check(){

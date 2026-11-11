@@ -11,8 +11,8 @@ import {createMarketServer} from '../cloud/server.mjs';
 const token=randomBytes(32).toString('base64url'),canaryToken=randomBytes(32).toString('base64url'),now=Date.parse('2026-11-07T12:00:00Z');
 const hash=value=>createHash('sha256').update(value).digest('hex');
 const env={PREDICTIR_SHARE_ACCESS:'1',PREDICTIR_SHARE_TOKEN_HASH:hash(token),PREDICTIR_CANARY_TOKEN_HASH:hash(canaryToken),MARKET_EDGE_SECRET:'fixture-edge-key-'.repeat(4)};
-function request(value=token,{origin='https://predictir.dev',ip='192.0.2.10',url='https://predictir.dev/api/access/redeem'}={}){
-  return new Request(url,{method:'POST',headers:{Origin:origin,'Content-Type':'application/json','X-Forwarded-For':ip},body:JSON.stringify({token:value})});
+function request(value=token,{origin='https://predictir.dev',ip='192.0.2.10',url='https://predictir.dev/api/access/redeem',headers={}}={}){
+  return new Request(url,{method:'POST',headers:{Origin:origin,'Content-Type':'application/json','X-Forwarded-For':ip,...headers},body:JSON.stringify({token:value})});
 }
 async function cookie(ip='192.0.2.11',value=token){const response=await redeemShareAccess(request(value,{ip}),{env,now});assert.equal(response.status,204);return response.headers.get('set-cookie').split(';',1)[0];}
 function environment(t){t.mock.method(Date,'now',()=>now);const keys=[...Object.keys(env),'MARKET_BACKEND_URL','ASSISTANT_SERVICE_SECRET','PREDICTIR_MODE'],previous=Object.fromEntries(keys.map(key=>[key,process.env[key]]));Object.assign(process.env,env);process.env.MARKET_BACKEND_URL='http://127.0.0.1:9876';process.env.ASSISTANT_SERVICE_SECRET='fixture-service-key-'.repeat(4);delete process.env.PREDICTIR_MODE;t.after(()=>{for(const key of keys)if(previous[key]===undefined)delete process.env[key];else process.env[key]=previous[key];});}
@@ -52,6 +52,22 @@ test('redemption is rate limited and logout removes only the share cookie',async
   const response=await logoutShareAccess(new Request('https://predictir.dev/api/access/logout',{method:'POST',headers:{Origin:'https://predictir.dev'}}),{env});
   assert.equal(response.status,204);assert.match(response.headers.get('set-cookie'),new RegExp('^'+SHARE_COOKIE+'=;'));assert.match(response.headers.get('set-cookie'),/Max-Age=0/);
   assert.equal((await logoutShareAccess(new Request('https://predictir.dev/api/access/logout'),{env})).status,405);
+});
+
+test('preview links require allowed ingress before issuing a session cookie',async()=>{
+  const vercel={...env,VERCEL:'1'};
+  const allowed={'x-vercel-ip-country':'US','x-vercel-forwarded-for':'192.0.2.71'};
+  for(const headers of [{}, {...allowed,'x-vercel-ip-country':'CN'}, {...allowed,'sec-fetch-site':'cross-site'}]){
+    const denied=await redeemShareAccess(request(token,{headers}),{env:vercel,now});
+    assert.equal(denied.status,403);
+    assert.equal(denied.headers.has('set-cookie'),false);
+  }
+  assert.equal((await redeemShareAccess(request(canaryToken,{headers:allowed}),{env:vercel,now})).status,204);
+  const azure={...env,PREDICTIR_MODE:'live'};
+  const denied=await redeemShareAccess(request(token,{ip:'192.0.2.72'}),{env:azure,now,countryLookup:async()=> 'RU'});
+  assert.equal(denied.status,403);
+  assert.equal(denied.headers.has('set-cookie'),false);
+  assert.equal((await redeemShareAccess(request(token,{ip:'192.0.2.72'}),{env:azure,now,countryLookup:async()=> 'US'})).status,204);
 });
 
 test('frontend API and assistant access checks run before upstream requests or model usage',async t=>{

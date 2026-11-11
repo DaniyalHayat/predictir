@@ -87,8 +87,13 @@ test('Postgres persists the queue, atomically decides once, and keeps delivery f
     assert.equal(pushes.length, 1);
     assert.equal(pushes[0].url, subscription.endpoint);
     assert.equal(pushes[0].options.redirect, 'error');
+    assert.equal(pushes[0].options.headers.Urgency, 'high');
     assert.doesNotMatch(Buffer.from(pushes[0].options.body).toString('utf8'), /Test Visitor|example\.invalid/);
-    assert.deepEqual(events, [['access.push_failed', {status: 503}]]);
+    assert.equal(events.length, 1);
+    assert.deepEqual(events[0].slice(0, 1), ['access.push_failed']);
+    assert.equal(events[0][1].status, 503);
+    assert.equal(events[0][1].result, 'provider_failed');
+    assert.ok(Number.isSafeInteger(events[0][1].duration_ms));
     assert.deepEqual((await call({action: 'status', receiptHash})).value, {status: 'pending'});
     const row = (await call({action: 'list'})).value.requests.find(item => item.email === email);
     assert.equal(row.name, input.name);
