@@ -13,7 +13,6 @@ const hosts = ['canonical', 'azure'];
 const modes = ['public', 'cold', 'warm'];
 const measures = {
   entry_ms: 'Open private gate (ms)',
-  workspace_entry_ms: 'Open authenticated workspace (ms)',
   workspace_entry_ms: 'Open workspace (ms)',
   catalog_ms: 'First market rows (ms)',
   contract_ms: 'Select contract (ms)',

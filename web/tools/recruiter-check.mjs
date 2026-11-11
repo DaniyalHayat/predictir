@@ -1,10 +1,12 @@
 import assert from 'node:assert/strict';
 import { appendFile, mkdir, writeFile } from 'node:fs/promises';
 import { createRequire } from 'node:module';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 const TIMEOUT = 30000;
 const QUOTE_MAX_SECONDS = 90;
+const TICKER_PATTERN = /^[A-Za-z0-9_.-]{1,140}$/;
 const PAPER_QUANTITY = 2;
 const VIEWPORT = { width: 1600, height: 1000 };
 const ASSISTANT_MODES = new Set(['deterministic-contract-brief', 'azure-deterministic', 'azure-foundry']);
@@ -69,6 +71,101 @@ function configuration() {
 
 const elapsed = started => Math.round(performance.now() - started);
 const normalize = text => text.normalize('NFKC').trim().replace(/\s+/g, ' ').toLowerCase();
+
+export function chooseMarket(rows, initiallySelected) {
+  return rows.find(({ ticker, yes, no }) => {
+    if (!TICKER_PATTERN.test(ticker || '') || rows.length > 1 && ticker === initiallySelected) return false;
+    const prices = [yes, no].map(text => Number(text?.match(/^(\d+(?:\.\d+)?)¢$/)?.[1]));
+    return prices.every(price => price > 0 && price < 100) && prices[0] + prices[1] >= 99.99;
+  })?.ticker;
+}
+
+export function readQuote({ ticker, maximum, diagnose = false }, root = document) {
+  const fail = reason => diagnose ? reason : false;
+  if (root.querySelector('[data-testid="selected-ticker"]')?.textContent !== ticker) {
+    return fail('selected contract changed');
+  }
+  const indicator = root.querySelector('.quote-strip .stream-state');
+  if (!indicator) return fail('quote controls absent');
+  if (indicator.textContent?.startsWith('Closed')) return fail('contract closed');
+  if (indicator.getAttribute('aria-pressed') === 'true') return fail('quote paused');
+  const seconds = indicator.querySelector('small')?.textContent?.match(/^(\d+)s since observation$/)?.[1];
+  if (seconds === undefined) return fail('no current observation');
+  const age = Number(seconds);
+  if (age >= maximum) return fail('observation exceeded freshness limit');
+  const price = selector => Number(root.querySelector(selector)?.textContent?.match(/^(\d+(?:\.\d+)?)¢$/)?.[1]);
+  const yes = price('.quote-strip .yes-price'), no = price('.quote-strip .no-price');
+  if (!(yes > 0 && yes < 100)) return fail('no executable YES ask');
+  if (!(no > 0 && no < 100)) return fail('no executable NO ask');
+  if (yes + no < 99.99) return fail('quote crossed');
+  if (!indicator.querySelector('.status-dot:not(.delayed)')) return fail('quote marked delayed');
+  return { age };
+}
+
+async function selectAndObserveQuote(page, rows, selected, settings, mark, metrics) {
+  const ticker = await check('catalog contract selection', async () => {
+    const [initiallySelected, candidates] = await Promise.all([
+      selected.textContent(),
+      rows.evaluateAll(items => items.map(row => ({
+        ticker: row.getAttribute('data-market-ticker'),
+        yes: row.querySelector('.row-prices strong')?.textContent,
+        no: row.querySelector('.row-prices > span')?.textContent
+      })))
+    ]);
+    const chosen = chooseMarket(candidates, initiallySelected);
+    if (!chosen) throw new CheckFailure('catalog has no eligible two-sided contract to select');
+    return chosen;
+  });
+  const row = rows.and(page.locator(`[data-market-ticker="${ticker}"]`));
+  const status = new Map();
+  const quoteEndpoint = request => {
+    const url = new URL(request.url());
+    return request.method() === 'GET' && url.origin === settings.publicUrl.origin &&
+      url.searchParams.get('ticker') === ticker && ['/api/book', '/api/stream'].includes(url.pathname)
+      ? url.pathname : null;
+  };
+  const onResponse = response => {
+    const path = quoteEndpoint(response.request());
+    if (path) status.set(path, `HTTP ${response.status()}`);
+  };
+  const onFailure = request => {
+    const path = quoteEndpoint(request);
+    if (path && !status.has(path)) status.set(path, 'no HTTP response');
+  };
+  page.on('response', onResponse);
+  page.on('requestfailed', onFailure);
+  try {
+    const selectedAt = performance.now();
+    const title = await check('matching contract details', async () => {
+      const expected = await row.getByRole('heading').innerText({ timeout: TIMEOUT });
+      await row.getByRole('button', { name: /^Open / }).click({ timeout: TIMEOUT });
+      await page.waitForFunction(
+        expectedTicker => document.querySelector('[data-testid="selected-ticker"]')?.textContent === expectedTicker,
+        ticker, { timeout: TIMEOUT }
+      );
+      assert.equal(await page.getByTestId('selected-title').innerText({ timeout: TIMEOUT }), expected);
+      mark('contract_ms', selectedAt);
+      return expected;
+    });
+    const options = { ticker, maximum: QUOTE_MAX_SECONDS };
+    try {
+      const quote = await page.waitForFunction(readQuote, options, { timeout: TIMEOUT });
+      metrics.quote_age_s = (await quote.jsonValue()).age;
+      await quote.dispose();
+    } catch {
+      const latest = await page.evaluate(readQuote, { ...options, diagnose: true }).catch(() => null);
+      const reason = typeof latest === 'string' ? latest : latest ? 'became usable after timeout' : 'browser state unavailable';
+      const book = status.get('/api/book') || 'not observed';
+      const stream = status.get('/api/stream') || 'not observed';
+      throw new CheckFailure(`usable quote timed out (${reason}; book ${book}; stream ${stream})`);
+    }
+    mark('quote_ms', selectedAt);
+    return { ticker, title };
+  } finally {
+    page.off('response', onResponse);
+    page.off('requestfailed', onFailure);
+  }
+}
 
 function verifyAnswer(text, { ticker, title }) {
   const heading = normalize(text.split('\n').find(line => line.trim()) || '');
@@ -224,34 +321,7 @@ async function journey(page, settings, { cold = false, demo = false, priorPositi
     });
     await clip('1 / 4 · Live market catalog');
 
-    const selection = await check('matching contract details and quote', async () => {
-      const initiallySelected = await selected.textContent();
-      const other = rows.filter({ has: page.locator('button.market-select:not([aria-current])') });
-      const row = (await other.count()) ? other.first() : rows.first();
-      const chosen = await row.getAttribute('data-market-ticker');
-      assert.match(chosen || '', /^[A-Za-z0-9_.-]{1,140}$/);
-      const title = await row.getByRole('heading').innerText();
-      const selectedAt = performance.now();
-      await row.getByRole('button', { name: /^Open / }).click();
-      await page.waitForFunction(expected => document.querySelector('[data-testid="selected-ticker"]')?.textContent === expected, chosen, { timeout: TIMEOUT });
-      assert.equal(await page.getByTestId('selected-title').innerText(), title);
-      if ((await rows.count()) > 1) assert.notEqual(chosen, initiallySelected);
-      mark('contract_ms', selectedAt);
-      const age = await page.waitForFunction(maximum => {
-        const indicator = document.querySelector('.quote-strip .stream-state');
-        if (!indicator?.querySelector('.status-dot:not(.delayed)')) return false;
-        const state = indicator.querySelector('small')?.textContent || '';
-        const parse = selector => Number(document.querySelector(selector)?.textContent?.match(/^(\d+(?:\.\d+)?)¢$/)?.[1]);
-        const ask = parse('.quote-strip .yes-price'), no = parse('.quote-strip .no-price');
-        const seconds = state.match(/^(\d+)s since observation$/)?.[1];
-        const age = seconds === undefined ? NaN : Number(seconds);
-        return Number.isFinite(age) && age < maximum && ask > 0 && ask < 100 && no > 0 && no < 100 && ask + no >= 99.99 ? { age } : false;
-      }, QUOTE_MAX_SECONDS, { timeout: TIMEOUT });
-      metrics.quote_age_s = (await age.jsonValue()).age;
-      await age.dispose();
-      mark('quote_ms', selectedAt);
-      return { ticker: chosen, title };
-    });
+    const selection = await selectAndObserveQuote(page, rows, selected, settings, mark, metrics);
     const { ticker } = selection;
     await clip('2 / 4 · Selected contract and current bid/ask depth');
 
@@ -274,14 +344,19 @@ async function journey(page, settings, { cold = false, demo = false, priorPositi
         check('Ask Why rendered answer', () => answerVisible.waitFor({ timeout: 65000 }).then(() => mark('ask_first_ms', askedAt))),
         check('Ask Why selected-contract request', async () => {
           const response = await answerResponse;
-          if (!response.ok()) throw new CheckFailure(`Ask Why HTTP ${response.status()}`);
-          if (!/text\/plain/i.test(response.headers()['content-type'] || '')) throw new CheckFailure('Ask Why stream content type');
           const headers = response.headers();
+          if (!response.ok()) {
+            const edge = headers['cf-mitigated'] === 'challenge' ? ' (Cloudflare challenge)' :
+              headers['x-vercel-mitigated'] ? ' (Vercel mitigation)' :
+              /application\/json/i.test(headers['content-type'] || '') ? ' (JSON response)' : '';
+            throw new CheckFailure(`Ask Why HTTP ${response.status()}${edge}`);
+          }
+          if (!/text\/plain/i.test(headers['content-type'] || '')) throw new CheckFailure('Ask Why stream content type');
           const mode = headers['x-research-model'], transport = headers['x-research-transport'];
           if (!ASSISTANT_MODES.has(mode) || !ASSISTANT_TRANSPORTS.has(transport)) throw new CheckFailure('Ask Why response provenance');
           if (settings.requireDedicatedCanary) {
             const expected = settings.host === 'azure' ? 'azure-deterministic' : 'deterministic-contract-brief';
-            if (mode !== expected || settings.host === 'canonical' && transport !== 'MCP Streamable HTTP')
+            if (mode !== expected || settings.host === 'canonical' && transport !== 'MCP In-Process')
               throw new CheckFailure('Ask Why response does not match the monitored deployment');
           }
           metrics.assistant_mode = mode;
@@ -382,7 +457,7 @@ async function report(results, { host, privateUrl }, stages) {
     '',
     `Authenticated coverage: ${authenticated ? 'enabled' : 'skipped (no configured link)'}`,
     'Cold means a new browser context and link redemption. Warm reuses the same browser session and cookies. Azure scale-to-zero is not inferred from browser state.',
-    'The UI must show an open, two-sided quote younger than 90 seconds. The paper entry checks the exact book request and the fill levels and quote timestamp retained by the app.',
+    'The check switches to a two-sided contract when the catalog has multiple rows, then verifies an open quote younger than 90 seconds. The paper entry checks the exact book request and the fill levels and quote timestamp retained by the app.',
     'Tail percentiles use nearest rank and require at least 20 p95 samples or 100 p99 samples. Samples below those counts are shown as insufficient.',
     '',
     '| Mode | Measure | n | Min | Max | p95 | p99 |',
@@ -460,7 +535,9 @@ async function main() {
   if (stages.length) process.exitCode = 1;
 }
 
-main().catch(error => {
-  console.error(`Predictir preview check failed: ${error instanceof CheckFailure ? error.message : 'unexpected failure'}.`);
-  process.exitCode = 1;
-});
+if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  main().catch(error => {
+    console.error(`Predictir preview check failed: ${error instanceof CheckFailure ? error.message : 'unexpected failure'}.`);
+    process.exitCode = 1;
+  });
+}

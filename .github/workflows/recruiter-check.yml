@@ -16,10 +16,6 @@ permissions:
   contents: read
   actions: read
 
-concurrency:
-  group: predictir-recruiter-browser-check
-  cancel-in-progress: false
-
 jobs:
   browser:
     if: github.ref == 'refs/heads/main'
@@ -30,6 +26,9 @@ jobs:
       fail-fast: false
       matrix:
         host: ${{ github.event_name == 'schedule' && fromJSON('["canonical","azure"]') || fromJSON(format('["{0}"]', inputs.host || 'canonical')) }}
+    concurrency:
+      group: predictir-browser-check-${{ matrix.host }}
+      cancel-in-progress: false
     env:
       PREDICTIR_CANARY_HOST: ${{ matrix.host }}
       PREDICTIR_REQUIRE_DEDICATED_CANARY: '1'
