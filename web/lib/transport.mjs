@@ -31,7 +31,7 @@ export async function readJSON(response, {source = 'Data service', maximumBytes 
   const retryAfterMs=response.status===429?retryAfterMilliseconds(response.headers.get('retry-after'),{fallback:0,maximum:86400000}):0;
   if (/^\s*</.test(text) || /text\/html/i.test(contentType)) {
     if(response.status===429){
-      const wait=retryAfterMs||15000;
+      const wait=retryAfterMilliseconds(response.headers.get('retry-after'));
       throw new DataResponseError(`Site protection paused requests. Try again in ${Math.ceil(wait/1000)} seconds.`,
         {code:'EDGE_RATE_LIMITED',status:429,url:response.url,retryAfterMs:wait});
     }
