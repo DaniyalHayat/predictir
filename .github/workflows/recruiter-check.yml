@@ -1,0 +1,54 @@
+name: Recruiter browser check
+
+on:
+  schedule:
+    - cron: '23 2,8,14,20 * * *'
+  workflow_dispatch:
+    inputs:
+      host:
+        description: Deployment to check
+        type: choice
+        options: [canonical, azure]
+        default: canonical
+
+permissions:
+  contents: read
+
+concurrency:
+  group: predictir-recruiter-browser-check
+  cancel-in-progress: false
+
+jobs:
+  browser:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    environment: predictir-monitor
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '26.12.1'
+      - name: Install pinned browser tooling
+        run: |
+          npm install --prefix "$RUNNER_TEMP/predictir-browser" --no-save --no-package-lock --ignore-scripts playwright@1.61.1
+          "$RUNNER_TEMP/predictir-browser/node_modules/.bin/playwright" install --with-deps chromium
+      - name: Check the canonical public gate and configured private journey
+        if: inputs.host != 'azure'
+        env:
+          PREDICTIR_CANARY_PUBLIC_URL: ${{ vars.PREDICTIR_CANARY_PUBLIC_URL }}
+          PREDICTIR_CANARY_URL: ${{ secrets.PREDICTIR_CANARY_URL }}
+          PREDICTIR_CANARY_REQUEST_FORM: '1'
+          PREDICTIR_PLAYWRIGHT_DIR: ${{ runner.temp }}/predictir-browser
+        run: node web/tools/recruiter-check.mjs
+      - name: Check the Azure public gate and configured private journey
+        if: inputs.host == 'azure'
+        env:
+          PREDICTIR_CANARY_PUBLIC_URL: ${{ vars.PREDICTIR_AZURE_CANARY_PUBLIC_URL }}
+          PREDICTIR_CANARY_URL: ${{ secrets.PREDICTIR_AZURE_CANARY_URL }}
+          PREDICTIR_PLAYWRIGHT_DIR: ${{ runner.temp }}/predictir-browser
+        run: |
+          test -n "$PREDICTIR_CANARY_PUBLIC_URL" || { echo 'Configure the Azure public origin before running this check.'; exit 1; }
+          node web/tools/recruiter-check.mjs
