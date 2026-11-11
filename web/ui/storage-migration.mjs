@@ -3,6 +3,8 @@ const prefix='predictir:';
 const marker=prefix+'storage-migrated:v1';
 const known=['guest-session:v1','active-account:v1','paper-journal:v1','paper-starting-balance:v1','appearance:v1','analytics-consent:v1'];
 
+export const legacyStorageKey=key=>legacyPrefix+key.slice(prefix.length);
+
 export function migratePredictirStorage(storage){
   if(storage.getItem(marker)==='complete')return false;
   const keys=new Set(known.map(key=>legacyPrefix+key));

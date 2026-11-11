@@ -1,5 +1,5 @@
 import {PAPER_STORAGE,PAPER_BALANCE} from './paper-state.mjs';
-import {migratePredictirStorage} from './storage-migration.mjs';
+import {legacyStorageKey,migratePredictirStorage} from './storage-migration.mjs';
 export const GUEST_STORAGE='predictir:guest-session:v1';
 export const ACTIVE_ACCOUNT='predictir:active-account:v1';
 export const GUEST_DATA_LIFETIME=6*60*60*1000;
@@ -10,15 +10,32 @@ export function guestExpired(guest,now=Date.now()){
   const created=Date.parse(guest?.created_at),lastActive=Date.parse(guest?.last_active_at),expires=Date.parse(guest?.expires_at);
   return !Number.isFinite(created)||!Number.isFinite(lastActive)||!Number.isFinite(expires)||now>=Math.min(expires,created+GUEST_DATA_LIFETIME)||now-lastActive>=GUEST_INACTIVITY;
 }
+function clearLegacyGuestRecords(storage,id){
+  if(typeof id!=='string'||!id)return;
+  const account='guest:'+id;
+  const sessionKey=legacyStorageKey(GUEST_STORAGE);
+  const active=storage.getItem(legacyStorageKey(ACTIVE_ACCOUNT));
+  const matchingSession=parse(storage.getItem(sessionKey))?.id===id;
+  storage.removeItem(legacyStorageKey(accountCacheKey(account)));
+  storage.removeItem(legacyStorageKey(accountCacheKey('watchlist:'+account)));
+  if(active===account||!active&&matchingSession){
+    storage.removeItem(legacyStorageKey(PAPER_STORAGE));
+    storage.removeItem(legacyStorageKey(PAPER_BALANCE));
+  }
+  if(matchingSession)storage.removeItem(sessionKey);
+}
 function clearGuestRecords(storage,id){
   const active=storage.getItem(ACTIVE_ACCOUNT),activeReset=!active||active==='guest:'+id;
   storage.removeItem(accountCacheKey('guest:'+id));storage.removeItem(accountCacheKey('watchlist:guest:'+id));
   if(activeReset){storage.removeItem(PAPER_STORAGE);storage.removeItem(PAPER_BALANCE);}
+  clearLegacyGuestRecords(storage,id);
   return activeReset;
 }
 export function purgeExpiredGuestData(storage,now=Date.now()){
   migratePredictirStorage(storage);
   const guest=parse(storage.getItem(GUEST_STORAGE));
+  const legacyGuest=parse(storage.getItem(legacyStorageKey(GUEST_STORAGE)));
+  if(legacyGuest&&guestExpired(legacyGuest,now)&&legacyGuest.id!==guest?.id)clearLegacyGuestRecords(storage,legacyGuest.id);
   if(!guest||!guestExpired(guest,now))return {removed:false,activeReset:false};
   const activeReset=clearGuestRecords(storage,guest.id);storage.removeItem(GUEST_STORAGE);
   return {removed:true,activeReset};
