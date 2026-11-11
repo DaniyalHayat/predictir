@@ -63,6 +63,7 @@ test('run metadata accounts for cancelled, public-only, failed and missing resul
   assert.match(summary, /displayed counts are partial/);
   assert.match(summary, /\| cold \| First market rows \(ms\) \| 1 \| insufficient \| insufficient \|/);
   assert.ok(expectedHost({display_title: 'Recruiter browser check (both)'}, 'azure'));
+  assert.ok(expectedHost({display_title: 'Preview browser check (both)'}, 'azure'));
   assert.ok(expectedHost({display_title: 'Recruiter browser check (both)'}, 'canonical'));
   assert.ok(expectedHost({display_title: 'Recruiter browser check (azure)'}, 'azure'));
   assert.ok(!expectedHost({display_title: 'Recruiter browser check (azure)'}, 'canonical'));

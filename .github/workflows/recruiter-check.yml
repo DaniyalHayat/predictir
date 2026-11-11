@@ -1,5 +1,5 @@
-name: Recruiter browser check
-run-name: Recruiter browser check (${{ github.event_name == 'schedule' && 'both' || inputs.host || 'canonical' }})
+name: Preview browser check
+run-name: Preview browser check (${{ github.event_name == 'schedule' && 'both' || inputs.host || 'canonical' }})
 
 on:
   schedule:

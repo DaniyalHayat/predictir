@@ -378,7 +378,7 @@ function sampleCell(values, percentile, minimum) {
 async function report(results, { host, privateUrl }, stages) {
   const authenticated = Boolean(privateUrl);
   const lines = [
-    '# Predictir recruiter check',
+    '# Predictir preview check',
     '',
     `Authenticated coverage: ${authenticated ? 'enabled' : 'skipped (no configured link)'}`,
     'Cold means a new browser context and link redemption. Warm reuses the same browser session and cookies. Azure scale-to-zero is not inferred from browser state.',
@@ -461,6 +461,6 @@ async function main() {
 }
 
 main().catch(error => {
-  console.error(`Predictir recruiter check failed: ${error instanceof CheckFailure ? error.message : 'unexpected failure'}.`);
+  console.error(`Predictir preview check failed: ${error instanceof CheckFailure ? error.message : 'unexpected failure'}.`);
   process.exitCode = 1;
 });

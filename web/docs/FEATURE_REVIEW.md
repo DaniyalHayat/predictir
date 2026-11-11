@@ -94,10 +94,4 @@ Live release checks exercised a $20-to-$30 scenario change, opening the matching
 
 Rolling-deployment verification also exposed a six-connection runtime-role ceiling. It was raised to twelve for two overlapping instances, each with a four-connection pool and one listener, plus two operational sessions. Two consecutive six-client read-only probes passed without further backend growth; no role privileges, paid plan or pool size changed. Source outages now display a refresh failure instead of missing model coverage or raw internal errors.
 
-## Recruiter-facing claim wording
-
-- Built a public prediction-market research and paper-trading application with shared WebSocket ingestion, bounded multiplexed portfolio updates, transactional PostgreSQL jobs, RLS, source lineage and immutable compressed evidence archives.
-- Trained and compared ridge, XGBoost and neural NBA models on 2,569 real historical games; exported a calibrated ensemble to JavaScript with native-inference parity, chronological model selection and auditable residual-based sensitivity.
-- Implemented fee- and depth-aware scenario sizing, discrete risk-constrained log-growth allocation, live paper-position decisions and confirmed settlement accounting; separated research estimates from realized paper results.
-
-Use benchmark numbers only with their exact fixture and scope. Do not turn the 1.554% retrospective Brier point improvement into a general accuracy, profitability or return claim. No employment verification is part of this work.
+The 1.554% retrospective Brier improvement applies to the stated NBA evaluation fixture.

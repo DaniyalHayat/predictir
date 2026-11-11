@@ -4,7 +4,7 @@
 
 Compare live exchange prices with supported independent forecasts, inspect the evidence, and practise with a paper portfolio.
 
-[Request preview access](https://predictir.dev/access) · [Azure edition](https://predictirazv2k8lc-front.bravesky-edec19fa.centralus.azurecontainerapps.io) · [Checks](https://github.com/DaniyalHayat/predictir/actions)
+[Request preview access](https://predictir.dev/access)
 
 Request access to the main preview or open a private invitation link you already have. Predictir accounts belong to this app only.
 
@@ -48,6 +48,6 @@ npm run typecheck
 npm run build
 ```
 
-[Methods](web/docs/quant-research.md) · [Paper execution](web/docs/FEATURE_REVIEW.md) · [Security](docs/SECURITY.md) · [Azure releases](azure/terraform/README.md)
+[Research methods](web/docs/quant-research.md) · [Security](docs/SECURITY.md)
 
 Paper portfolios are simulations. Browser-local positions remain on that device and origin; export them before clearing site data. Automatic position reviews run while the workspace is open.

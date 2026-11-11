@@ -27,7 +27,7 @@ Four event-scoped custom dimensions are registered: **Market category** (`market
 
 `paper_entry` is registered as a key event counted once per session, with **no default monetary value**. It measures use of the simulator, never revenue, a purchase or an actual exchange order. The standard `purchase` key event is not emitted by the app.
 
-The property currently has no established visitor dataset. Zero/empty cards are preserved. Custom dimensions are prospective, and the new loader is awaiting the held application release; populated production reports are not claimed. Aggregate visits cannot establish whether a visitor is a recruiter or their identity. Attribution here measures acquisition and product use; it is separate from the held advertising-optimizer project and from trading-return attribution.
+This verification recorded no visitor dataset. The custom dimensions were configured for future aggregate acquisition and usage reporting.
 
 ## Reproduction
 

@@ -64,7 +64,7 @@ export function historyRecords(rows, current, now) {
 }
 
 export function expectedHost(run, host) {
-  const title = /^Recruiter browser check \((canonical|azure|both)\)$/.exec(run.display_title || '')?.[1];
+  const title = /^(?:Preview|Recruiter) browser check \((canonical|azure|both)\)$/.exec(run.display_title || '')?.[1];
   if (title) return title === 'both' || title === host;
   return run.event === 'schedule' && host === 'canonical';
 }
@@ -162,7 +162,7 @@ async function main(env = process.env) {
     retrieved = true;
   } catch {
     incomplete = true;
-    console.warn('::warning::Prior recruiter check history could not be retrieved.');
+    console.warn('::warning::Prior preview check history could not be retrieved.');
   }
   const rows = historyRecords(previous, current, now);
   await appendFile(summary, historySummary({host, rows, runs, current, incomplete}));
@@ -175,7 +175,7 @@ async function main(env = process.env) {
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   main().catch(() => {
-    console.error('The recruiter check history could not be written.');
+    console.error('The preview check history could not be written.');
     process.exitCode = 1;
   });
 }
