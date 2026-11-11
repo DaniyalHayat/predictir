@@ -144,7 +144,7 @@ resource "azurerm_application_insights_workbook" "operations" {
       type = 1
       name = "scope"
       content = {
-        json = "# Predictir operations\nAPI latency covers completed backend requests. Tail percentiles are hidden below 20 samples for p95 and 100 for p99. Stream rows measure how long a connection stayed open. An empty result means this workspace recorded no matching telemetry in the window."
+        json = "# Predictir operations\nAPI latency covers completed backend requests. Client cancellations appear in a separate count. Tail percentiles are hidden below 20 samples for p95 and 100 for p99. Stream rows measure how long a connection stayed open. An empty result means this workspace recorded no matching telemetry in the window."
       }
       }], [
       for query in local.operations_queries : {
