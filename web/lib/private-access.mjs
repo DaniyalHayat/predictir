@@ -87,11 +87,13 @@ export function accessOriginAllowed(request,env){
     return origin===(env.APP_ORIGIN||own.origin);
   }catch{return false;}
 }
-export function issueShareCookie(env=process.env,now=Date.now(),kind='share'){
+export function issueShareCookie(env=process.env,now=Date.now(),kind='share',expiresAt){
   const config=settings(env,kind);
   if(!shareAccessEnabled(env)||!config)return null;
-  const encoded=Buffer.from(JSON.stringify({v:1,h:config.hash,exp:Math.floor(now/1000)+config.seconds})).toString('base64url');
-  return config.cookie+'='+encoded+'.'+signature(encoded,config.key,kind)+'; Path=/; Secure; HttpOnly; SameSite=Lax; Max-Age='+config.seconds;
+  const current=Math.floor(now/1000),exp=expiresAt??current+config.seconds;
+  if(!Number.isSafeInteger(exp)||exp<=current||exp>current+config.seconds+60)return null;
+  const encoded=Buffer.from(JSON.stringify({v:1,h:config.hash,exp})).toString('base64url');
+  return config.cookie+'='+encoded+'.'+signature(encoded,config.key,kind)+'; Path=/; Secure; HttpOnly; SameSite=Lax; Max-Age='+Math.min(config.seconds,exp-current);
 }
 function allowance(ip,env,now){
   const slot=Math.floor(now/60000);

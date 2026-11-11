@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {createHash,randomBytes} from 'node:crypto';
 import {handleAccessRequest} from '../lib/access-requests.mjs';
-import {publicAccessPath,SHARE_COOKIE,shareCookieAuthorized} from '../lib/private-access.mjs';
+import {publicAccessPath,SHARE_COOKIE,SHARE_COOKIE_SECONDS,shareCookieAuthorized} from '../lib/private-access.mjs';
 
 const hash=value=>createHash('sha256').update(value).digest('hex');
 const ownerCode=randomBytes(32).toString('base64url');
@@ -25,8 +25,10 @@ function call(operation,body,{cookie='',from=origin,options={},query=''}={}){
 
 test('only the originating browser can enter after an authenticated owner approves',async()=>{
   const pending=new Map();
+  const now=Date.parse('2026-11-11T12:00:00Z');
+  const sessionExpiresAt=now/1000+SHARE_COOKIE_SECONDS;
   let forwarded=0;
-  const options={fetcher:async(url,init)=>{
+  const options={now,fetcher:async(url,init)=>{
     forwarded++;
     assert.equal(url.href,'https://backend.example.test/api/internal/access-requests');
     assert.equal(init.redirect,'error');
@@ -39,7 +41,10 @@ test('only the originating browser can enter after an authenticated owner approv
       pending.set(data.receiptHash,{id:'00000000-0000-4000-8000-000000000001',name:data.name,email:data.email,status:'pending'});
       return Response.json({status:'pending'},{status:202});
     }
-    if(data.action==='status')return Response.json({status:pending.get(data.receiptHash)?.status||'missing'});
+    if(data.action==='status'){
+      const status=pending.get(data.receiptHash)?.status||'missing';
+      return Response.json(status==='approved'?{status,sessionExpiresAt}:{status});
+    }
     if(data.action==='list')return Response.json({requests:[...pending.values()]});
     if(data.action==='decide'){
       const match=[...pending.values()].find(row=>row.id===data.id);
@@ -76,9 +81,22 @@ test('only the originating browser can enter after an authenticated owner approv
   assert.deepEqual(await forgedReceipt.json(),{status:'missing'});
   const entry=await call('request/status',undefined,{cookie:receipt,options});
   assert.equal(entry.status,204);
-  assert.equal(shareCookieAuthorized(cookiePair(entry.headers,SHARE_COOKIE),env),true);
+  const share=cookiePair(entry.headers,SHARE_COOKIE);
+  assert.equal(shareCookieAuthorized(share,env,now),true);
   assert.match(entry.headers.getSetCookie()[1],/Max-Age=0/);
-  assert.equal(forwarded,5);
+
+  const retry=await call('request/status',undefined,{cookie:receipt,options:{...options,now:now+60_000}});
+  assert.equal(retry.status,204);
+  assert.equal(cookiePair(retry.headers,SHARE_COOKIE),share);
+  assert.match(retry.headers.getSetCookie()[0],/Max-Age=86340$/);
+  assert.equal(shareCookieAuthorized(share,env,sessionExpiresAt*1000),false);
+  const expired=await call('request/status',undefined,{cookie:receipt,options:{...options,now:sessionExpiresAt*1000}});
+  assert.equal(expired.status,503);
+  assert.equal(cookiePair(expired.headers,SHARE_COOKIE),undefined);
+  const missingExpiry=await call('request/status',undefined,{cookie:receipt,options:{now,fetcher:async()=>Response.json({status:'approved'})}});
+  assert.equal(missingExpiry.status,503);
+  assert.equal(cookiePair(missingExpiry.headers,SHARE_COOKIE),undefined);
+  assert.equal(forwarded,7);
 });
 
 test('requests are closed when disabled and reject cross-site or oversized input without reaching storage',async()=>{

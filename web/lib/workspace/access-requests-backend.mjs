@@ -1,5 +1,6 @@
 import {createECDH, createHmac, ECDH, randomUUID} from 'node:crypto';
 import {generateRequestDetails} from 'web-push';
+import {SHARE_COOKIE_SECONDS} from '../private-access.mjs';
 
 export const ACCESS_REQUESTS_INTERNAL_PATH = '/api/internal/access-requests';
 const REQUESTS = 'predictir-access-requests-v1';
@@ -153,16 +154,37 @@ export function createAccessRequestsBackend({edgeSecret, env = process.env, now 
     } catch { report('push_failed', 503, 'delivery_failed'); }
   }
 
-  async function status(storage, receiptHash) {
-    const {rows} = await storage.db.query(`SELECT payload->>'state' AS state FROM market_lab.records
+  async function findRequest(storage, receiptHash) {
+    const {rows} = await storage.db.query(`SELECT payload->>'state' AS state, payload->>'session_expires_at' AS session_expires_at
+      FROM market_lab.records
       WHERE pk=$1 AND sk=$2 AND expires_at>clock_timestamp()`, [REQUESTS, receiptHash]);
-    return liveState(rows[0]?.state);
+    return rows[0];
+  }
+
+  async function activate(storage, receiptHash) {
+    const row = await findRequest(storage, receiptHash);
+    const state = liveState(row?.state);
+    if (state !== 'approved') return {status: state};
+
+    let expiry = row.session_expires_at;
+    if (expiry === null) {
+      const {rows} = await storage.db.query(`UPDATE market_lab.records
+        SET payload=jsonb_set(payload,'{session_expires_at}',to_jsonb(floor(extract(epoch FROM clock_timestamp()))::bigint+$3::integer))
+        WHERE pk=$1 AND sk=$2 AND expires_at>clock_timestamp() AND payload->>'state'='approved'
+          AND payload->>'session_expires_at' IS NULL
+        RETURNING payload->>'session_expires_at' AS session_expires_at`, [REQUESTS, receiptHash, SHARE_COOKIE_SECONDS]);
+      expiry = (rows[0] || await findRequest(storage, receiptHash))?.session_expires_at;
+    }
+    const sessionExpiresAt = Number(expiry);
+    return Number.isSafeInteger(sessionExpiresAt) && sessionExpiresAt > Math.floor(now() / 1000)
+      ? {status: state, sessionExpiresAt}
+      : {status: 'missing'};
   }
 
   async function createRequest(storage, input) {
     const receiptHash = hashValue(input.receiptHash), ipHash = hashValue(input.ipHash);
     const details = contact(input);
-    const existing = await status(storage, receiptHash);
+    const existing = liveState((await findRequest(storage, receiptHash))?.state);
     if (existing !== 'missing') return {status: existing};
     const stamp = new Date(now()).toISOString(), day = stamp.slice(0, 10), hour = stamp.slice(0, 13);
     const emailHash = createHmac('sha256', edgeSecret).update('predictir-access-email\0' + details.email).digest('hex');
@@ -177,7 +199,7 @@ export function createAccessRequestsBackend({edgeSecret, env = process.env, now 
       VALUES($1,$2,$3::jsonb,clock_timestamp()+interval '7 days') ON CONFLICT DO NOTHING RETURNING sk`,
       [REQUESTS, receiptHash, JSON.stringify({id: randomUUID(), state: 'pending', ...details})]);
     if (inserted.rowCount) await sendNotice(storage, day);
-    return {status: inserted.rowCount ? 'pending' : await status(storage, receiptHash)};
+    return {status: inserted.rowCount ? 'pending' : liveState((await findRequest(storage, receiptHash))?.state)};
   }
 
   return async (storage, input) => {
@@ -187,7 +209,7 @@ export function createAccessRequestsBackend({edgeSecret, env = process.env, now 
       case 'request':
         return {code: 202, value: await createRequest(storage, input)};
       case 'status':
-        return {code: 200, value: {status: await status(storage, hashValue(input.receiptHash))}};
+        return {code: 200, value: await activate(storage, hashValue(input.receiptHash))};
       case 'list': {
         const {rows} = await storage.db.query(`
           SELECT payload->>'id' AS id, payload->>'name' AS name, payload->>'email' AS email, created_at AS "createdAt"

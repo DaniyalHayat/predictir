@@ -4,6 +4,7 @@ import {randomBytes} from 'node:crypto';
 import test from 'node:test';
 import {generateVAPIDKeys} from 'web-push';
 import {createMarketServer} from '../cloud/server.mjs';
+import {SHARE_COOKIE_SECONDS} from '../lib/private-access.mjs';
 import {createAccessRequestsBackend, scrubExpiredAccessRequests} from '../lib/workspace/access-requests-backend.mjs';
 import {makePostgresStore} from '../lib/postgres-store.mjs';
 import {applyTestSchema} from './database-fixture.mjs';
@@ -102,10 +103,10 @@ test('Postgres persists the queue, atomically decides once, and keeps delivery f
     const status = competing[0].value.status;
     assert.ok(['approved', 'declined'].includes(status));
     assert.equal(competing[1].value.status, status);
-    assert.deepEqual((await call({action: 'status', receiptHash})).value, {status});
     assert.equal((await call({action: 'list'})).value.requests.some(item => item.id === row.id), false);
     const decided = await store.get('predictir-access-requests-v1', receiptHash);
     assert.deepEqual(decided, {id: row.id, state: status});
+    assert.equal((await call({action: 'status', receiptHash})).value.status, status);
     await store.db.query(`INSERT INTO market_lab.records(pk,sk,payload,expires_at)
       VALUES('predictir-access-requests-v1',$1,'{"state":"pending","name":"Expired","email":"expired@example.invalid"}',now()-interval '1 hour')`, [expiredReceipt]);
     await scrubExpiredAccessRequests(store);
@@ -114,6 +115,36 @@ test('Postgres persists the queue, atomically decides once, and keeps delivery f
     assert.deepEqual(rows[0].payload, {state: 'pending'});
   } finally {
     await call({action: 'unsubscribe', endpoint: subscription.endpoint}).catch(() => {});
+    await store.close();
+  }
+});
+
+test('Postgres activates one expiry per approved receipt across concurrent polls', {skip: !testDatabase}, async () => {
+  if (!new URL(testDatabase).pathname.endsWith('_test')) throw new Error('Use a dedicated _test database');
+  const store = makePostgresStore({connectionString: testDatabase});
+  const receiptHash = hash();
+  const run = createAccessRequestsBackend({edgeSecret: secret});
+  const check = () => run(store, {action: 'status', receiptHash});
+  try {
+    await applyTestSchema(store.db);
+    await store.db.query(`INSERT INTO market_lab.records(pk,sk,payload,expires_at)
+      VALUES('predictir-access-requests-v1',$1,'{"state":"approved"}',now()+interval '6 days')`, [receiptHash]);
+    const started = Math.floor(Date.now()/1000);
+    const results = await Promise.all(Array.from({length: 8}, check));
+    const sessionExpiresAt = results[0].value.sessionExpiresAt;
+    const finished = Math.floor(Date.now()/1000);
+    assert.ok(sessionExpiresAt >= started + SHARE_COOKIE_SECONDS && sessionExpiresAt <= finished + SHARE_COOKIE_SECONDS);
+    const approved = {code: 200, value: {status: 'approved', sessionExpiresAt}};
+    for (const result of results) assert.deepEqual(result, approved);
+    assert.deepEqual(await check(), approved);
+    assert.deepEqual(await store.get('predictir-access-requests-v1', receiptHash), {state: 'approved', session_expires_at: sessionExpiresAt});
+
+    const expired = started - 1;
+    await store.db.query(`UPDATE market_lab.records SET payload=jsonb_set(payload,'{session_expires_at}',to_jsonb($2::bigint))
+      WHERE pk='predictir-access-requests-v1' AND sk=$1`, [receiptHash, expired]);
+    assert.deepEqual(await check(), {code: 200, value: {status: 'missing'}});
+    assert.deepEqual(await store.get('predictir-access-requests-v1', receiptHash), {state: 'approved', session_expires_at: expired});
+  } finally {
     await store.close();
   }
 });

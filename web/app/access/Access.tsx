@@ -2,6 +2,7 @@
 
 import {useEffect,useRef,useState} from 'react';
 import type {CSSProperties,FormEvent} from 'react';
+import AccessChallenge from './AccessChallenge';
 
 type AccessStatus='approved'|'pending'|'missing'|'declined';
 type AccessScreen='checking'|'request'|'pending'|'declined'|'link';
@@ -13,7 +14,7 @@ const buttonStyle:CSSProperties={width:'100%',minHeight:44,border:'1px solid #f5
 function postAccess(path:string,body?:Record<string,string>){
   return fetch(`/api/access/${path}`,{
     method:'POST',credentials:'same-origin',cache:'no-store',referrerPolicy:'no-referrer',
-    signal:AbortSignal.timeout(12000),
+    signal:AbortSignal.timeout(path==='request'?15000:12000),
     ...(body?{headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}:{}),
   });
 }
@@ -47,10 +48,12 @@ async function enterPreview(requestsEnabled:boolean):Promise<EntryResult>{
   return {status:requestsEnabled?await readStatus():'missing',notice};
 }
 
-export default function Access({requestsEnabled=false}:{requestsEnabled?:boolean}){
+export default function Access({requestsEnabled=false,challengeSiteKey=null}:{requestsEnabled?:boolean;challengeSiteKey?:string|null}){
   const [screen,setScreen]=useState<AccessScreen>('checking');
   const [notice,setNotice]=useState('');
   const [submitting,setSubmitting]=useState(false);
+  const [challengeToken,setChallengeToken]=useState('');
+  const [challengeAttempt,setChallengeAttempt]=useState(0);
   const entry=useRef<Promise<EntryResult>|null>(null);
   const submitInFlight=useRef(false);
 
@@ -131,13 +134,15 @@ export default function Access({requestsEnabled=false}:{requestsEnabled?:boolean
     const fields=new FormData(event.currentTarget);
     const name=String(fields.get('name')??'').trim(),email=String(fields.get('email')??'').trim();
     if(!name||!email){setNotice('Enter your name and email address.');return;}
+    if(challengeSiteKey&&!challengeToken){setNotice('Complete the security check first.');return;}
     submitInFlight.current=true;
     setSubmitting(true);
     setNotice('');
     try{
-      const response=await postAccess('request',{name,email});
+      const response=await postAccess('request',{name,email,...(challengeSiteKey?{challengeToken}:{})});
       if(response.status===202){setScreen('pending');return;}
       if(response.status===400||response.status===422){setNotice('Check your name and email address, then try again.');return;}
+      if(response.status===403&&challengeSiteKey){setNotice('The security check expired or was unsuccessful. Try again.');return;}
       if(response.status===429){setNotice('Too many requests. Try again later.');return;}
       setNotice('We couldn’t submit your request. Try again shortly.');
     }catch{
@@ -145,6 +150,7 @@ export default function Access({requestsEnabled=false}:{requestsEnabled?:boolean
     }finally{
       submitInFlight.current=false;
       setSubmitting(false);
+      if(challengeSiteKey){setChallengeToken('');setChallengeAttempt(attempt=>attempt+1);}
     }
   }
 
@@ -169,7 +175,8 @@ export default function Access({requestsEnabled=false}:{requestsEnabled?:boolean
         <label style={{display:'grid',gap:6,fontSize:14}}>Email address
           <input name="email" type="email" autoComplete="email" required maxLength={254} style={inputStyle}/>
         </label>
-        <button type="submit" disabled={submitting} style={{...buttonStyle,opacity:submitting?0.7:1,cursor:submitting?'wait':'pointer'}}>
+        {challengeSiteKey&&<AccessChallenge key={challengeAttempt} siteKey={challengeSiteKey} onToken={setChallengeToken}/>}
+        <button type="submit" disabled={submitting||Boolean(challengeSiteKey&&!challengeToken)} style={{...buttonStyle,opacity:submitting||challengeSiteKey&&!challengeToken?0.7:1,cursor:submitting?'wait':'pointer'}}>
           {submitting?'Sending request…':'Request access'}
         </button>
       </form>}

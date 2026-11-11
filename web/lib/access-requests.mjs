@@ -2,6 +2,7 @@ import {createHash,createHmac,randomBytes,timingSafeEqual} from 'node:crypto';
 import {accessOriginAllowed,issueShareCookie,PRIVATE_HEADERS,shareAccessEnabled} from './private-access.mjs';
 import {readProxyBody} from './workspace/proxy.mjs';
 import {accessIngress} from './workspace/access-ingress.mjs';
+import {accessChallengeConfig,validateAccessChallenge} from './workspace/access-challenge.mjs';
 
 const receiptCookie='__Host-predictir-access-receipt';
 const ownerCookie='__Host-predictir-access-owner';
@@ -86,7 +87,7 @@ function providerFailure(result){
   return response({error:'Access requests are temporarily unavailable. Try again shortly.'},503);
 }
 
-export async function handleAccessRequest(request,operation,{env=process.env,now=Date.now(),fetcher=fetch,countryLookup}={}){
+export async function handleAccessRequest(request,operation,{env=process.env,now=Date.now(),fetcher=fetch,challengeFetcher=fetch,countryLookup}={}){
   if(!accessRequestsEnabled(env))return response({error:'This action is unavailable.'},404);
   if(request.method!=='POST')return response({error:'Use POST.'},405);
   if(!accessOriginAllowed(request,env)||request.headers.get('sec-fetch-site')==='cross-site'||new URL(request.url).search)
@@ -115,17 +116,21 @@ export async function handleAccessRequest(request,operation,{env=process.env,now
         const result=await backend(request,env,fetcher,{action:'status',receiptHash},regional);
         if(result.status!==200||!statusPattern.test(result.data?.status||''))return providerFailure(result);
         if(result.data.status==='approved'){
-          const share=issueShareCookie(env,now);
+          const expiry=result.data.sessionExpiresAt;
+          const share=Number.isSafeInteger(expiry)&&issueShareCookie(env,now,'share',expiry);
+          if(!share)return providerFailure({status:503});
           return response(null,204,[share,cookie(receiptCookie,'',0)]);
         }
         const replacement=result.data.status==='missing'?[receiptHeader(randomBytes(32).toString('base64url'))]:
           result.data.status==='declined'?[cookie(receiptCookie,'',0)]:[];
         return response({status:result.data.status},200,replacement);
       }
-      const {name,email}=await jsonBody(request,1024);
+      const {name,email,challengeToken}=await jsonBody(request,accessChallengeConfig(env).enabled?4096:1024);
       if(typeof name!=='string'||typeof email!=='string'||!name.trim()||name.trim().length>100||
         /[\u0000-\u001f\u007f]/u.test(name)||email.trim().length>254||!/^[^\s@]+@[^\s@]+\.[^\s@]+$/u.test(email.trim()))
         return response({error:'Enter your name and a valid email address.'},400);
+      const challenge=await validateAccessChallenge(challengeToken,request,env,challengeFetcher);
+      if(challenge!==200)return response({error:challenge===403?'Complete the security check and try again.':'The security check is temporarily unavailable.'},challenge);
       const ip=regional.ip||'unknown';
       const ipHash=createHmac('sha256',env.MARKET_EDGE_SECRET).update('predictir.access.ip\0'+ip).digest('hex');
       const result=await backend(request,env,fetcher,{action:'request',receiptHash,name:name.trim(),email:email.trim().toLowerCase(),ipHash},regional);

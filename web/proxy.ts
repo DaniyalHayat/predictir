@@ -2,11 +2,13 @@ import {randomBytes} from 'node:crypto';
 import {NextResponse} from 'next/server';
 import type {NextRequest} from 'next/server';
 import {contentSecurityPolicy} from './lib/security-policy.mjs';
+import {accessChallengeConfig} from './lib/workspace/access-challenge.mjs';
 import {shareAccessEnabled,shareAccessKind,privateAccessAllowed,publicAccessPath,PRIVATE_HEADERS} from './lib/private-access.mjs';
 
 export function proxy(request:NextRequest){
   const nonce=randomBytes(18).toString('base64');
-  const policy=contentSecurityPolicy({nonce,development:process.env.NODE_ENV==='development'});
+  const accessChallenge=request.nextUrl.pathname==='/access'&&Boolean(accessChallengeConfig().siteKey);
+  const policy=contentSecurityPolicy({nonce,development:process.env.NODE_ENV==='development',accessChallenge});
   const requestHeaders=new Headers(request.headers);
   requestHeaders.set('x-nonce',nonce);
   requestHeaders.set('Content-Security-Policy',policy);
