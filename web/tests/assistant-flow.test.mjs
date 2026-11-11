@@ -1,5 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import {once} from 'node:events';
+import {createMarketServer} from '../cloud/server.mjs';
 import {assistantResponse} from '../lib/workspace/assistant.mjs';
 import {boundPacket} from '../lib/workspace/mcp.mjs';
 import {assistantContext,assistantPayload} from '../lib/workspace/assistant-context.mjs';
@@ -38,6 +40,49 @@ test('automatic full analysis compares current model, reporting and exchange inp
 });
 
 import {azureResearchAnswer,azureToolArguments} from '../lib/workspace/azure-research.mjs';
+
+test('canonical Ask Why batches authenticated contract reads and preserves a real quota response',async t=>{
+  const ticker='KXTEST-ALPHA',edge='fixture-market-edge-'.repeat(3),secret='fixture-assistant-secret-'.repeat(3);
+  const calls=[],quota=[];
+  let allowed=true;
+  const server=createMarketServer({production:true,shareAccess:false,edgeSecret:edge,serviceSecret:secret,logger:()=>{},
+    storageEnabled:()=>true,storage:()=>({consume:async (...args)=>{quota.push(args);return allowed;}}),
+    mcp:()=>assert.fail('Ask Why should not open a remote MCP connection'),
+    researchReadback:async scope=>{
+      assert.equal(scope.ticker,ticker);
+      assert.equal(scope.panel,'analysis');
+      assert.equal(scope.detail,'full');
+      const as_of=new Date().toISOString();
+      return [
+        ['get_contract',{ticker,book:{as_of},quotes:{yes_ask_usd:.42,no_ask_usd:.60}}],
+        ['get_research',{ticker,title:'Fixture outcome',as_of,forecast:{probability:.6,interval:[.5,.7],source_as_of:as_of}}],
+      ].map(([name,packet])=>({name,duration_ms:10,result:{content:[{type:'text',text:JSON.stringify(packet)}]}}));
+    }});
+  server.on('request',request=>calls.push(request.url));
+  server.listen(0,'127.0.0.1');
+  await once(server,'listening');
+  t.after(()=>new Promise(resolve=>{server.close(resolve);server.closeAllConnections();}));
+  const backend='http://127.0.0.1:'+server.address().port;
+  const env={VERCEL:'1',MARKET_BACKEND_URL:backend,MARKET_EDGE_SECRET:edge,ASSISTANT_SERVICE_SECRET:secret};
+  const launch=assistantContext('analysis',ticker,{detail:'full'});
+  const payload=assistantPayload(ticker,'validated',[{role:'user',content:launch.question}],launch);
+  const request=()=>new Request('https://predictir.dev/api/assistant',{method:'POST',body:JSON.stringify(payload),
+    headers:{Origin:'https://predictir.dev','Content-Type':'application/json','X-Vercel-IP-Country':'US','X-Vercel-Forwarded-For':'192.0.2.12'}});
+  const response=await assistantResponse(request(),{env,generate:()=>assert.fail('This answer should not use the paid model')});
+  assert.equal(response.status,200);
+  assert.equal(response.headers.get('X-Research-Transport'),'MCP In-Process');
+  assert.match(response.headers.get('Server-Timing'),/get_contract;dur=10/);
+  assert.match(await response.text(),/independent model estimates 60.0% YES/);
+  assert.deepEqual(calls,['/internal/assistant/read']);
+  assert.deepEqual(quota.map(args=>args.slice(1)),[[6000,8]]);
+  allowed=false;
+  const throttled=await assistantResponse(request(),{env});
+  assert.equal(throttled.status,429);
+  assert.match(throttled.headers.get('Retry-After'),/^[1-9]\d*$/);
+  assert.equal(calls.length,2);
+  const wrongEdge=await assistantResponse(request(),{env:{...env,MARKET_EDGE_SECRET:'wrong-'.repeat(8)}});
+  assert.equal(wrongEdge.status,403);
+});
 
 test('automatic analysis includes current reporting and compares model and exchange figures across categories',async()=>{
   const now=Date.now(),as_of=new Date(now).toISOString();

@@ -7,6 +7,7 @@ import {cents,dateLabel,percent} from './api.mjs';
 import {contractTitle} from './selection';
 import {usePanelFocus} from './Modal';
 import {assistantPayload} from '../lib/workspace/assistant-context.mjs';
+import {retryAfterMilliseconds} from '../lib/transport.mjs';
 import {Answer} from './AssistantAnswer';
 import type {Book,Evidence,Launch,Message,Model,Snapshot} from './assistant-types';
 import './assistant-workbench.css';
@@ -96,9 +97,26 @@ export default function Assistant({market,book,fees,research,history,onClose,mod
         prepared.current=true;
       }
       setStage('research');
-      const response=await fetch('/api/assistant',{method:'POST',headers:{'Content-Type':'application/json'},signal:controller.signal,
-        body:JSON.stringify(assistantPayload(market.ticker,model,requestHistory(next),launch))});
+      const body=JSON.stringify(assistantPayload(market.ticker,model,requestHistory(next),launch));
+      const requestAnswer=()=>fetch('/api/assistant',{method:'POST',headers:{'Content-Type':'application/json'},signal:controller.signal,body});
+      let response=await requestAnswer();
+      const retryDelay=retryAfterMilliseconds(response.headers.get('retry-after'),{fallback:0,maximum:86400000});
+      if(response.status===429&&automatic&&next.length===1&&!response.headers.has('cf-mitigated')&&
+        !response.headers.has('x-vercel-mitigated')&&retryDelay>0&&retryDelay<=3000){
+        await response.body?.cancel();
+        const elapsed=AbortSignal.timeout(retryDelay);
+        const ready=AbortSignal.any([elapsed,controller.signal]);
+        if(!ready.aborted)await new Promise<void>(resolve=>ready.addEventListener('abort',()=>resolve(),{once:true}));
+        controller.signal.throwIfAborted();
+        response=await requestAnswer();
+      }
       if(!response.ok){
+        if(response.status===429){
+          const wait=retryAfterMilliseconds(response.headers.get('retry-after'),{fallback:60000,maximum:86400000});
+          const seconds=Math.ceil(wait/1000);
+          const delay=seconds<60?`${seconds} seconds`:`${Math.ceil(seconds/60)} minute${seconds>60?'s':''}`;
+          throw new Error(`Ask Why is rate limited. Try again in ${delay}.`);
+        }
         let detail;try{detail=await response.json();}catch{}
         throw new Error(detail?.error||'The assistant is temporarily unavailable.');
       }

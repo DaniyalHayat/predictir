@@ -151,7 +151,7 @@ export function createResearchServer({tickerScope,modelScope='baseline',executio
 
 export async function localResearchReadback({ticker,model,executionControls,panel,detail,question,signal,dependencies}) {
   const server=createResearchServer({tickerScope:ticker,modelScope:model,executionScope:executionControls,dependencies});
-  const client=new Client({name:'predictir-azure-research',version:'4.0.0'});
+  const client=new Client({name:'predictir-research',version:'4.0.0'});
   const [clientTransport,serverTransport]=InMemoryTransport.createLinkedPair();
   const deadline=AbortSignal.any([signal,AbortSignal.timeout(18000)]);
   try{

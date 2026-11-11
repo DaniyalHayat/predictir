@@ -13,6 +13,12 @@ test('JSON errors and byte bounds are enforced without returning raw markup', as
   await assert.rejects(() => readJSON(new Response('{"data":"1234567890"}'), {maximumBytes:5}), /too much data/);
   assert.deepEqual((await readJSON(new Response('{"ok":true}'))).data, {ok:true});
 });
+test('rate-limited responses preserve retry timing across proxy response formats', async () => {
+  for(const body of ['{"error":"Slow down"}','<!doctype html>','Too many requests','']){
+    await assert.rejects(readJSON(new Response(body,{status:429,headers:{'retry-after':'90'}})),
+      error=>error.status===429&&error.retryAfterMs===90000);
+  }
+});
 test('request deadlines cover both a stalled response and a body that never completes',async t=>{
   const server=createServer((request,response)=>{
     if(request.url==='/body'){response.writeHead(200,{'content-type':'application/json'});response.write('{"partial":');}

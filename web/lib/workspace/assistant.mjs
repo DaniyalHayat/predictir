@@ -1,4 +1,5 @@
 import {createHash,timingSafeEqual} from 'node:crypto';
+import {isIP} from 'node:net';
 import {accessOriginAllowed,privateAccessResponse,shareAccessKind,PRIVATE_HEADERS} from '../private-access.mjs';
 import {Client} from '@modelcontextprotocol/sdk/client/index.js';
 import {StreamableHTTPClientTransport} from '@modelcontextprotocol/sdk/client/streamableHttp.js';
@@ -192,8 +193,32 @@ export function assistantChargeUnits(usage){
   const dollars=(usage.inputTokens*.0000001+(usage.outputTokens+unknown)*.0000004)*1.25;
   return Math.min(25,Math.ceil(dollars*1000));
 }
-const azureFailure=(error,status)=>Response.json({error},{status,headers:{'Cache-Control':'no-store',...(status===429?{'Retry-After':'60'}:{})}});
+const retrySeconds=error=>Number.isFinite(error?.retryAfterMs)&&error.retryAfterMs>0?Math.ceil(error.retryAfterMs/1000):60;
+const azureFailure=(error,status,wait=60)=>Response.json({error},{status,headers:{'Cache-Control':'no-store',...(status===429?{'Retry-After':String(wait)}:{})}});
 const azureAllowanceMessage='The research assistant allowance is exhausted. Market data remains available.';
+
+async function researchBatch(path,backend,headers,scope,{fetcher,signal}){
+  const {ticker,model,panel,detail,executionControls,question}=scope;
+  const tools=planResearchReadback(question,{panel,detail});
+  let batch;
+  try{
+    batch=await fetcher(new URL(path,backend),{
+      method:'POST',headers,body:JSON.stringify({ticker,model,panel,detail,execution_controls:executionControls,messages:[{role:'user',content:question}]}),
+      signal,timeoutMs:24000,maximumBytes:100000,redirect:'error',cache:'no-store',
+    });
+  }catch(error){
+    if(error?.status===404&&error.message==='Unknown service path')return null;
+    throw error;
+  }
+  if(!Array.isArray(batch?.results)||batch.results.length>tools.length)throw new Error('Invalid research batch');
+  const packets=new Map(),timings=[];
+  for(const row of batch.results){
+    if(!tools.includes(row?.name)||packets.has(row.name))throw new Error('Invalid research tool');
+    packets.set(row.name,azureResearchPacket(row.name,row.result,ticker));
+    if(Number.isSafeInteger(row.duration_ms)&&row.duration_ms>=0&&row.duration_ms<=18000)timings.push(row.name+';dur='+row.duration_ms);
+  }
+  return {packets,timings,tools};
+}
 
 async function azureReadback(request,{ticker,messages,model,executionControls,panel,detail},{createClient,fetcher,countryLookup,env,foundryFetcher,canary}){
   const access=await azureAccess(request.headers,countryLookup);
@@ -219,25 +244,9 @@ async function azureReadback(request,{ticker,messages,model,executionControls,pa
       'X-Research-Model':mode,'X-Research-Transport':transport,...(timings.length?{'Server-Timing':timings.join(', ')}:{})}});
   };
   if(!createClient){
-    let batch;
-    try{
-      batch=await fetcher(new URL('/internal/assistant/read-azure',backend),{
-        method:'POST',headers,body:JSON.stringify({ticker,model,panel,detail,execution_controls:executionControls,messages:[{role:'user',content:question}]}),
-        signal,timeoutMs:24000,maximumBytes:100000,redirect:'error',cache:'no-store',
-      });
-    }catch(error){
-      if(error?.status!==404||error.message!=='Unknown service path')throw error;
-    }
-    if(batch!==undefined){
-      if(!Array.isArray(batch.results)||batch.results.length>tools.length)throw new Error('Invalid research batch');
-      const packets=new Map(),timings=[];
-      for(const row of batch.results){
-        if(!tools.includes(row?.name)||packets.has(row.name))throw new Error('Invalid research tool');
-        packets.set(row.name,azureResearchPacket(row.name,row.result,ticker));
-        if(Number.isSafeInteger(row.duration_ms)&&row.duration_ms>=0&&row.duration_ms<=18000)timings.push(row.name+';dur='+row.duration_ms);
-      }
-      return respond(packets,'MCP In-Process',timings);
-    }
+    const batch=await researchBatch('/internal/assistant/read-azure',backend,headers,
+      {ticker,model,executionControls,panel,detail,question},{fetcher,signal});
+    if(batch)return respond(batch.packets,'MCP In-Process',batch.timings);
   }
   const allowance=await reserve('research',signal);
   if(allowance?.allowed===false)return azureFailure(azureAllowanceMessage,429);
@@ -281,7 +290,7 @@ export async function assistantResponse(request,{createClient,generate=streamTex
       if(request.headers.get('content-type')?.split(';')[0].trim().toLowerCase()!=='application/json')return azureFailure('Use a JSON chat request.',415);
     }else{
       if(origin&&!applicationOriginMatches(origin,own)&&origin!=='https://predictir.dev'&&origin!=='https://www.predictir.dev')return Response.json({error:'Open the assistant from the app.'},{status:403});
-      if(process.env.VERCEL==='1'&&!isCountryAllowed(request.headers.get('x-vercel-ip-country')))return Response.json({error:'This service is unavailable in your region'},{status:403});
+      if(env.VERCEL==='1'&&!isCountryAllowed(request.headers.get('x-vercel-ip-country')))return Response.json({error:'This service is unavailable in your region'},{status:403});
     }
     if(Number(request.headers.get('content-length')||0)>20000)return Response.json({error:'Chat request too large'},{status:413});
     const reader=request.body?.getReader(),chunks=[];let bytes=0;
@@ -294,11 +303,11 @@ export async function assistantResponse(request,{createClient,generate=streamTex
     if(edition==='live'){
       try{return await azureReadback(request,input,{createClient,fetcher,countryLookup,env,foundryFetcher,canary});}
       catch(error){
-        if(error?.status===429||error?.code===429)return azureFailure(azureAllowanceMessage,429);
+        if(error?.status===429||error?.code===429)return azureFailure(azureAllowanceMessage,429,retrySeconds(error));
         return azureFailure('The assistant could not reach its research service. Try again shortly.',503);
       }
     }
-    const {ticker,messages,model:researchModel,executionControls,panel,detail}=input,backend=process.env.MARKET_BACKEND_URL,secret=process.env.ASSISTANT_SERVICE_SECRET;
+    const {ticker,messages,model:researchModel,executionControls,panel,detail}=input,backend=env.MARKET_BACKEND_URL,secret=env.ASSISTANT_SERVICE_SECRET;
     if(!backend||!secret)return Response.json({error:'The research assistant is not connected yet. Market research remains available.'},{status:503});
     const address=new URL(backend);if(address.protocol!=='https:'&&!['localhost','127.0.0.1'].includes(address.hostname))throw new Error('The backend address is invalid');
     const ip=request.headers.get('x-vercel-forwarded-for')?.split(',')[0]?.trim()||'unknown';
@@ -310,6 +319,26 @@ export async function assistantResponse(request,{createClient,generate=streamTex
     const mathIntent=/^explain the probability range and costs[.!?]?$/i.test(question);
     const reserve=()=>fetcher(new URL('/internal/assistant/reserve',backend),{method:'POST',headers,body:JSON.stringify({fingerprint}),signal:AbortSignal.timeout(12000)});
     const guided=Boolean(panel||detail==='full')&&!contractIntent&&!executionIntent&&!mathIntent;
+    const automaticAnalysis=panel==='analysis'&&messages.length===1&&
+      question===assistantContext('analysis',ticker,{detail}).question;
+    const country=env.VERCEL==='1'?request.headers.get('x-vercel-ip-country'):'US';
+    const trustedIp=env.VERCEL==='1'&&isIP(ip)?ip:null;
+    const loopback=['localhost','127.0.0.1'].includes(address.hostname);
+    if(!createClient&&(automaticAnalysis||guided)&&env.MARKET_EDGE_SECRET&&(trustedIp||loopback)){
+      const scope={ticker,model:researchModel,executionControls,panel,detail,question};
+      const batch=await researchBatch('/internal/assistant/read',backend,{
+        ...headers,'X-Market-Edge-Secret':env.MARKET_EDGE_SECRET,'X-Market-Country':country,
+        ...(trustedIp?{'X-Market-Client-IP':trustedIp}:{}),
+      },scope,{fetcher,signal:request.signal});
+      if(batch){
+        if(![...batch.packets.values()].some(Boolean))return azureFailure('The contract research is temporarily unavailable. Try again shortly.',503);
+        const {answer}=await azureResearchAnswer({...scope,...batch,signal:request.signal,env:{},
+          explain:{contract:explainContract,math:explainResearchMath,execution:explainExecutionMath}});
+        return new Response(answer,{headers:{'Content-Type':'text/plain; charset=utf-8','Cache-Control':'no-store','X-Content-Type-Options':'nosniff',
+          'X-Research-Model':automaticAnalysis?'deterministic-contract-brief':'deterministic-guided','X-Research-Transport':'MCP In-Process',
+          ...(batch.timings.length?{'Server-Timing':batch.timings.join(', ')}:{})}});
+      }
+    }
     const reservation=guided||contractIntent||executionIntent||mathIntent?null:await reserve();
     client=createClient?await createClient(ticker,researchModel,executionControls):new Client({name:'predictir-web',version:'4.0.0'});
     if(!createClient)await client.connect(new StreamableHTTPClientTransport(new URL('/mcp',backend),{requestInit:{headers:{Authorization:'Bearer '+secret,'X-Market-Ticker':ticker,'X-Market-Model':researchModel,...(executionControls?{'X-Market-Execution':JSON.stringify(executionControls)}:{})}}}),{signal:request.signal,timeout:6000});
@@ -377,5 +406,10 @@ export async function assistantResponse(request,{createClient,generate=streamTex
       finally{await client?.close().catch(()=>{});controller.close();}
     }});
     return new Response(body,{headers:{'Content-Type':'text/plain; charset=utf-8','Cache-Control':'no-store','X-Research-Model':MODEL,'X-Research-Transport':'MCP Streamable HTTP'}});
-  }catch(error){await client?.close().catch(()=>{});return Response.json({error:error.status===429?'The research assistant allowance is exhausted. Market data remains available.':error instanceof SyntaxError?'Chat request must be valid JSON':error instanceof RangeError?error.message:'The assistant could not reach its research service. Try again shortly.'},{status:error.status|| (error instanceof RangeError||error instanceof SyntaxError?400:503),headers:{'Cache-Control':'no-store'}});}
+  }catch(error){
+    await client?.close().catch(()=>{});
+    const status=error?.status|| (error?.code===429?429:error instanceof RangeError||error instanceof SyntaxError?400:503);
+    return Response.json({error:status===429?'The research assistant is rate limited. Try again shortly.':error instanceof SyntaxError?'Chat request must be valid JSON':error instanceof RangeError?error.message:'The assistant could not reach its research service. Try again shortly.'},
+      {status,headers:{'Cache-Control':'no-store',...(status===429?{'Retry-After':String(retrySeconds(error))}:{})}});
+  }
 }

@@ -282,17 +282,11 @@ test('reporting panel uses a compact lexical query and labels fresh attributed f
   assert.equal(h.calls.tools.length,2);
 });
 
-test('guided explanations on the existing edition use scoped tools without opening the paid model path',async t=>{
-  const previous={MARKET_BACKEND_URL:process.env.MARKET_BACKEND_URL,ASSISTANT_SERVICE_SECRET:process.env.ASSISTANT_SERVICE_SECRET};
-  process.env.MARKET_BACKEND_URL=env.MARKET_BACKEND_URL;
-  process.env.ASSISTANT_SERVICE_SECRET=env.ASSISTANT_SERVICE_SECRET;
-  t.after(()=>{
-    for(const [key,value] of Object.entries(previous))if(value===undefined)delete process.env[key];else process.env[key]=value;
-  });
+test('guided explanations on the existing edition use scoped tools without opening the paid model path',async ()=>{
   let network=0,generate=0,closed=0;
   const calls=[];
   const reply=await assistantResponse(request('Why this settlement rule?',{panel:'rules',detail:'full'}),{
-    env:{},
+    env:{MARKET_BACKEND_URL:env.MARKET_BACKEND_URL,ASSISTANT_SERVICE_SECRET:env.ASSISTANT_SERVICE_SECRET},
     createClient:async()=>({
       listTools:async()=>({tools:['get_contract','get_research'].map(name=>({name,description:'Read public research',inputSchema:{type:'object'}}))}),
       callTool:async ({name})=>{calls.push(name);return packet(name==='get_contract'?contract():research());},

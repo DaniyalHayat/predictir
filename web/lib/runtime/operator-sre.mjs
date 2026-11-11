@@ -24,7 +24,7 @@ const routes = new Set([
   '/api/workspace/position-review', '/api/workspace/opinions', '/api/workspace/recommendations',
   '/api/workspace/search', '/api/workspace/evidence', '/api/workspace/evidence/search',
   '/internal/diagnostics', '/internal/assistant/reserve', '/internal/assistant/reserve-azure',
-  '/internal/assistant/read-azure', '/internal/assistant/settle', '/mcp',
+  '/internal/assistant/read', '/internal/assistant/read-azure', '/internal/assistant/settle', '/mcp',
 ]);
 const providers = new Set(['kalshi', 'espn', 'apple_music', 'x', 'spotify', 'reddit', 'kworb',
   'supabase_auth', 'postgres', 'foundry']);

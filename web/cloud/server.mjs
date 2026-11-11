@@ -35,7 +35,7 @@ const productionDefault=process.env.NODE_ENV==='production'||Boolean(process.env
 const rateWindowMs=60000,azureHeavyRequestsPerWindow=12;
 const allowanceObservationMs=5*60*1000;
 const interactiveLatencyRoutes=new Set(['/api/workspace/catalog','/api/workspace/markets','/api/workspace/research',
-  '/api/workspace/evidence/search','/api/book','/api/account/portfolio','/mcp']);
+  '/api/workspace/evidence/search','/api/book','/api/account/portfolio','/internal/assistant/read','/mcp']);
 class LocalThrottle extends Error {
   constructor(message,reason){
     super(message);this.status=429;this.reason=reason;
@@ -330,18 +330,20 @@ export function createMarketServer({feed:injectedFeed,storageEnabled=cloudEnable
           const allowed=Boolean(foundry)&&await consume('foundry#'+day,foundry.daily,172800)&&await consume('foundry#'+month,foundry.monthly,45*86400);
           return json(res,{allowed});
         }
-        if(url.pathname==='/internal/assistant/read-azure'){
-          if(!isAzure)return json(res,{error:'Unknown service path'},404);
-          if(!edgeVerified||!isIP(String(req.headers['x-market-client-ip']||''))||
+        if(url.pathname==='/internal/assistant/read-azure'||url.pathname==='/internal/assistant/read'){
+          if(isAzure!==(url.pathname==='/internal/assistant/read-azure'))return json(res,{error:'Unknown service path'},404);
+          if(!edgeVerified||((production||isAzure)&&!isIP(String(req.headers['x-market-client-ip']||'')))||
             !isCountryAllowed(String(req.headers['x-market-country']||'')))return json(res,{error:'Open the assistant from the app.'},403);
-          if(!storageEnabled())return json(res,{error:'Assistant quota storage is unavailable'},503);
+          if(isAzure&&!storageEnabled())return json(res,{error:'Assistant quota storage is unavailable'},503);
           const {messages,...scope}=parseAssistantInput(input),question=messages.at(-1).content.trim();
-          const fingerprint=createHash('sha256').update(serviceSecret+'\0'+identity).digest('hex');
-          const day=new Date(now()).toISOString().slice(0,10);
           const tools=planResearchReadback(question,scope);
-          await quota(5+2*tools.length);
-          if(!await storage().consume('azure-assistant#'+day+'#'+fingerprint,30,1,172800)){
-            return throttle('throttle_assistant_allowance',{error:'The research assistant allowance is exhausted. Market data remains available.'});
+          await quota((isAzure?5:2)+2*tools.length);
+          if(isAzure){
+            const fingerprint=createHash('sha256').update(serviceSecret+'\0'+identity).digest('hex');
+            const day=new Date(now()).toISOString().slice(0,10);
+            if(!await storage().consume('azure-assistant#'+day+'#'+fingerprint,30,1,172800)){
+              return throttle('throttle_assistant_allowance',{error:'The research assistant allowance is exhausted. Market data remains available.'});
+            }
           }
           const abort=new AbortController();
           const cancel=()=>abort.abort();

@@ -93,7 +93,7 @@ const operationalRoutes = new Set([
   '/api/intelligence', '/api/intelligence/catalog', '/api/intelligence/series', '/api/intelligence/candles',
   '/api/intelligence/execution', '/api/intelligence/forward', '/api/intelligence/forward/start', '/api/intelligence/forward/checkpoint',
   '/mcp', '/internal/operator-mcp', '/internal/diagnostics', '/internal/assistant/reserve', '/internal/assistant/reserve-azure',
-  '/internal/assistant/read-azure', '/internal/assistant/settle', '/api/internal/access-requests',
+  '/internal/assistant/read', '/internal/assistant/read-azure', '/internal/assistant/settle', '/api/internal/access-requests',
 ]);
 export function operationalRoute(path) {
   return operationalRoutes.has(path) ? path : 'other';
