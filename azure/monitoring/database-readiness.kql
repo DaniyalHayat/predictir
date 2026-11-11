@@ -1,0 +1,11 @@
+ContainerAppConsoleLogs
+| where TimeGenerated > ago(24h)
+| where ContainerAppName == "PREDICTIR_BACKEND_APP" and Log has "readiness"
+| extend Event = parse_json(Log)
+| where tostring(Event.event) == "readiness.database"
+| extend Status = toint(Event.status), DurationMs = todouble(Event.duration_ms)
+| where Status in (200, 503)
+| summarize Checks = count(), Failed = countif(Status == 503),
+    P95ms = round(percentile(DurationMs, 95), 1)
+    by Window = bin(TimeGenerated, 15m)
+| order by Window desc

@@ -56,6 +56,14 @@ name_prefix   = "predictirlab"
 # Optional continuous front and backend replicas. Review the higher cost first.
 # keep_apps_warm = true
 
+# Existing workspace logs and the Predictir operations workbook.
+# enable_saved_logs = true
+# Include $0.50/month for the optional 15-minute database alert.
+# enable_database_readiness_alert = true
+
+# Optional independent credential for the private read-only canary.
+# live_canary_token_hash_uri = "https://<vault>.vault.azure.net/secrets/predictir-canary-sha256/<version>"
+
 # Optional existing single-tenant Entra owner setup.
 # live_owner = {
 #   tenant_id = "<tenant-guid>"

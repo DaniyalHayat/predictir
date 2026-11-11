@@ -1,0 +1,14 @@
+let Checks = materialize(
+    ContainerAppConsoleLogs
+    | where TimeGenerated > ago(15m)
+    | where ContainerAppName == "PREDICTIR_BACKEND_APP" and Log has "readiness"
+    | extend Event = parse_json(Log)
+    | where tostring(Event.event) == "readiness.database"
+    | project TimeGenerated, Status = toint(Event.status)
+    | where Status in (200, 503)
+);
+let LastHealthy = toscalar(Checks | where Status == 200 | summarize max(TimeGenerated));
+Checks
+| where Status == 503 and (isnull(LastHealthy) or TimeGenerated > LastHealthy)
+| summarize FailedChecks = count(), FirstFailure = min(TimeGenerated), LastFailure = max(TimeGenerated)
+| where FailedChecks >= 3 and LastFailure - FirstFailure >= 1m and LastFailure > ago(5m)

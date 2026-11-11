@@ -1,0 +1,9 @@
+ContainerAppConsoleLogs
+| where TimeGenerated > ago(24h)
+| where ContainerAppName == "PREDICTIR_BACKEND_APP" and (Log has "closed" or Log has "finished")
+| extend Event = parse_json(Log)
+| extend Kind = tostring(Event.event), Route = tostring(Event.route), DurationMs = todouble(Event.duration_ms)
+| where Route in ("/api/stream", "/api/portfolio/stream") and isnotnull(DurationMs)
+| where Kind in ("stream.closed", "request.finished")
+| summarize Samples = count(), MedianSeconds = round(percentile(DurationMs, 50) / 1000, 1) by Route, Event = Kind
+| order by Samples desc

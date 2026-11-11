@@ -5,13 +5,15 @@ locals {
   identities      = local.live || (local.apps && var.existing_acr != null)
   bootstrap       = local.live && var.live_bootstrap != null
   saved_logs      = local.live && var.enable_saved_logs
+  readiness_alert = local.saved_logs && local.apps && var.enable_database_readiness_alert
   access_requests = local.live && local.apps && var.private_share_access_enabled ? var.live_access_requests : null
 
   postgres_monthly_base_usd = var.location == "centralus" ? 18.69 : 16.59
   minimum_approval_usd      = var.profile == "live" ? 25 : 1
   warm_compute_idle_usd     = 730 * 3600 * (local.live ? 2.25 : 1.5) * 0.000003
   saved_logs_reserve_usd    = local.saved_logs ? 5 : 0
-  reviewed_base_usd         = (local.live ? local.postgres_monthly_base_usd : 0) + (local.apps && var.keep_apps_warm ? local.warm_compute_idle_usd : 0) + local.saved_logs_reserve_usd
+  readiness_alert_usd       = local.readiness_alert ? 0.5 : 0
+  reviewed_base_usd         = (local.live ? local.postgres_monthly_base_usd : 0) + (local.apps && var.keep_apps_warm ? local.warm_compute_idle_usd : 0) + local.saved_logs_reserve_usd + local.readiness_alert_usd
 
   unresolved_image = "invalid.invalid/release-required@sha256:0000000000000000000000000000000000000000000000000000000000000000"
   images = var.images == null ? {
@@ -53,7 +55,7 @@ resource "terraform_data" "release_approval" {
         var.spend_approval.reviewed_monthly_usd >= local.reviewed_base_usd &&
         var.spend_approval.reviewed_monthly_usd <= var.spend_approval.approved_monthly_usd
       )
-      error_message = "The estimate must fit a reviewed release limit of at least $1 for replay or $25 for live and cover the database, DNS, idle compute and optional $5 saved-log reserve as applicable. Choose usage-based billing or attest a verified credit-only subscription with its spending limit enabled."
+      error_message = "The estimate must fit a reviewed release limit of at least $1 for replay or $25 for live and cover the database, DNS, idle compute, $5 saved-log reserve and $0.50 readiness alert as applicable. Choose usage-based billing or attest a verified credit-only subscription with its spending limit enabled."
     }
 
     precondition {
@@ -90,13 +92,20 @@ resource "terraform_data" "release_approval" {
             startswith(uri, "https://${lower(element(reverse(split("/", var.live_secrets.vault_resource_id)), 0))}.vault.azure.net/secrets/")
           ]) &&
           length(distinct(local.access_secret_names)) == length(local.access_secret_uris) &&
-          length(setintersection(local.access_secret_names, [
-            for uri in concat([var.live_secrets.edge_secret_uri, var.live_secrets.assistant_secret_uri, var.live_secrets.account_secret_uri, var.live_secrets.database_url_uri, var.live_secrets.database_ca_uri], values(var.live_secrets.provider_secret_uris)) :
-            try(lower(split("/", uri)[4]), "")
-          ])) == 0
+          length(setintersection(local.access_secret_names, local.runtime_secret_names)) == 0
         )
       )
       error_message = "Access requests require the live private preview and distinct secrets in its existing Key Vault."
+    }
+
+    precondition {
+      condition = var.live_canary_token_hash_uri == null ? true : (
+        length(local.canary_secrets) == 0 || var.live_secrets == null ? false : (
+          startswith(var.live_canary_token_hash_uri, "https://${lower(element(reverse(split("/", var.live_secrets.vault_resource_id)), 0))}.vault.azure.net/secrets/") &&
+          !contains(concat(local.runtime_secret_names, local.access_secret_names), try(lower(split("/", var.live_canary_token_hash_uri)[4]), ""))
+        )
+      )
+      error_message = "The canary requires live private preview access and a distinct verifier in its existing Key Vault."
     }
 
     precondition {
@@ -174,11 +183,18 @@ locals {
     [local.access_requests.owner_hash_uri], local.access_requests.push == null ? [] : [local.access_requests.push.private_key_uri]
   )
   access_secret_names = [for uri in local.access_secret_uris : try(lower(split("/", uri)[4]), "")]
+  runtime_secret_names = var.live_secrets == null ? [] : [
+    for uri in concat([var.live_secrets.edge_secret_uri, var.live_secrets.assistant_secret_uri, var.live_secrets.account_secret_uri, var.live_secrets.database_url_uri, var.live_secrets.database_ca_uri], values(var.live_secrets.provider_secret_uris)) :
+    try(lower(split("/", uri)[4]), "")
+  ]
+  canary_secrets = local.live && local.apps && var.private_share_access_enabled && var.live_canary_token_hash_uri != null ? {
+    canary-token-sha256 = var.live_canary_token_hash_uri
+  } : {}
 
   front_secrets = local.live && var.live_secrets != null ? merge({
     edge      = var.live_secrets.edge_secret_uri
     assistant = var.live_secrets.assistant_secret_uri
-  }, local.access_requests == null ? {} : { access-owner = local.access_requests.owner_hash_uri }) : {}
+  }, local.canary_secrets, local.access_requests == null ? {} : { access-owner = local.access_requests.owner_hash_uri }) : {}
 
   backend_secrets = local.live && var.live_secrets != null ? merge({
     edge        = var.live_secrets.edge_secret_uri
@@ -186,7 +202,7 @@ locals {
     account     = var.live_secrets.account_secret_uri
     database    = var.live_secrets.database_url_uri
     database-ca = var.live_secrets.database_ca_uri
-    }, var.live_secrets.provider_secret_uris, local.access_requests == null ? {} : (
+    }, var.live_secrets.provider_secret_uris, local.canary_secrets, local.access_requests == null ? {} : (
     local.access_requests.push == null ? {} : { access-push = local.access_requests.push.private_key_uri }
   )) : {}
 

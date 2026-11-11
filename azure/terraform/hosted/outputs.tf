@@ -21,6 +21,15 @@ output "saved_logs" {
   } : null
 }
 
+output "operations" {
+  description = "Portal resource IDs for the Predictir workbook and optional database readiness alert."
+  value = local.saved_logs && local.apps ? {
+    workbook_id        = azurerm_application_insights_workbook.operations[0].id
+    readiness_alert_id = local.readiness_alert ? azurerm_monitor_scheduled_query_rules_alert_v2.database_readiness[0].id : null
+    monthly_alert_usd  = local.readiness_alert_usd
+  } : null
+}
+
 output "bootstrap_job_name" {
   description = "Temporary manual job. Successful execution verifies database initialization before live app launch."
   value       = length(azurerm_container_app_job.bootstrap) == 1 ? azurerm_container_app_job.bootstrap[0].name : null

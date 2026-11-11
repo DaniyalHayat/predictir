@@ -74,8 +74,9 @@ run "replay_keeps_streaming_only_when_saved_logs_are_selected" {
   command = plan
 
   variables {
-    azure_enabled     = true
-    enable_saved_logs = true
+    azure_enabled                   = true
+    enable_saved_logs               = true
+    enable_database_readiness_alert = true
   }
 
   assert {
@@ -83,6 +84,8 @@ run "replay_keeps_streaming_only_when_saved_logs_are_selected" {
       !output.profile.saved_logs &&
       azurerm_container_app_environment.edition[0].logs_destination == null &&
       output.saved_logs == null &&
+      output.operations == null &&
+      length(azurerm_monitor_scheduled_query_rules_alert_v2.database_readiness) == 0 &&
       length(azurerm_log_analytics_workspace.runtime) == 0 &&
       length(azurerm_monitor_diagnostic_setting.runtime) == 0
     )
@@ -375,11 +378,18 @@ run "live_runtime_uses_referenced_secrets" {
   command = plan
 
   variables {
-    azure_enabled           = true
-    profile                 = "live"
-    postgres_admin_password = "isolated-mock-input-not-a-secret"
-    launch_live_apps        = true
-    live_database_ready     = true
+    azure_enabled                   = true
+    profile                         = "live"
+    postgres_admin_password         = "isolated-mock-input-not-a-secret"
+    launch_live_apps                = true
+    live_database_ready             = true
+    enable_saved_logs               = true
+    enable_database_readiness_alert = true
+    spend_approval = {
+      approved_monthly_usd     = 25
+      reviewed_monthly_usd     = 25
+      accepts_metered_overages = true
+    }
 
     live_secrets = {
       vault_resource_id    = "/subscriptions/11111111-1111-1111-1111-111111111111/resourceGroups/fixture/providers/Microsoft.KeyVault/vaults/fixturevault"
@@ -405,9 +415,28 @@ run "live_runtime_uses_referenced_secrets" {
       contains([for env in azurerm_container_app.backend[0].template[0].container[0].env : env.name], "PREDICTIR_DATABASE_HOST") &&
       toset([for env in azurerm_container_app.backend[0].template[0].container[0].env : env.name if env.secret_name != null && env.secret_name != ""]) == toset(["MARKET_EDGE_SECRET", "ASSISTANT_SERVICE_SECRET", "ACCOUNT_COOKIE_SECRET", "DATABASE_URL", "DATABASE_CA_CERT", "SPOTIFY_CLIENT_ID", "SPOTIFY_CLIENT_SECRET", "X_BEARER_TOKEN"]) &&
       one([for env in azurerm_container_app.backend[0].template[0].container[0].env : env.value if env.name == "X_MONTHLY_COST_CENTS"]) == "150" &&
-      contains([for env in azurerm_container_app.backend[0].template[0].container[0].env : env.name], "PREDICTIR_SHUTDOWN_TIMEOUT_MS")
+      contains([for env in azurerm_container_app.backend[0].template[0].container[0].env : env.name], "PREDICTIR_SHUTDOWN_TIMEOUT_MS") &&
+      azurerm_container_app.front[0].template[0].container[0].readiness_probe[0].path == "/healthz" &&
+      azurerm_container_app.backend[0].template[0].container[0].readiness_probe[0].path == "/readyz" &&
+      azurerm_container_app.backend[0].template[0].container[0].liveness_probe[0].path == "/healthz" &&
+      azurerm_container_app.backend[0].template[0].container[0].startup_probe[0].path == "/healthz"
     )
-    error_message = "Live secrets must be Key Vault references scoped to the relevant app identity."
+    error_message = "Live app identities, Key Vault references, and health probe separation must remain scoped."
+  }
+
+  assert {
+    condition = (
+      length(azurerm_application_insights_workbook.operations) == 1 &&
+      length(azurerm_monitor_scheduled_query_rules_alert_v2.database_readiness) == 1 &&
+      azurerm_monitor_scheduled_query_rules_alert_v2.database_readiness[0].evaluation_frequency == "PT15M" &&
+      azurerm_monitor_scheduled_query_rules_alert_v2.database_readiness[0].auto_mitigation_enabled &&
+      length(azurerm_monitor_scheduled_query_rules_alert_v2.database_readiness[0].action) == 0 &&
+      contains(azurerm_monitor_scheduled_query_rules_alert_v2.database_readiness[0].scopes, azurerm_log_analytics_workspace.runtime[0].id) &&
+      azurerm_role_assignment.readiness_alert_logs[0].scope == azurerm_log_analytics_workspace.runtime[0].id &&
+      azurerm_role_assignment.readiness_alert_logs[0].role_definition_name == "Log Analytics Reader" &&
+      output.operations.monthly_alert_usd == 0.5
+    )
+    error_message = "The opt-in readiness alert must use the existing workspace, a scoped identity, and the 15-minute billing tier."
   }
 }
 
@@ -449,6 +478,7 @@ run "live_access_requests_scope_owner_and_push_secrets" {
     live_database_ready          = true
     private_share_access_enabled = true
     private_share_token_sha256   = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    live_canary_token_hash_uri   = "https://fixturevault.vault.azure.net/secrets/canary/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 
     live_secrets = {
       vault_resource_id    = "/subscriptions/11111111-1111-1111-1111-111111111111/resourceGroups/fixture/providers/Microsoft.KeyVault/vaults/fixturevault"
@@ -474,15 +504,19 @@ run "live_access_requests_scope_owner_and_push_secrets" {
       contains(keys(azurerm_role_assignment.key_vault_secret), "backend/access-push") &&
       !contains(keys(azurerm_role_assignment.key_vault_secret), "backend/access-owner") &&
       !contains(keys(azurerm_role_assignment.key_vault_secret), "front/access-push") &&
+      endswith(azurerm_role_assignment.key_vault_secret["front/canary-token-sha256"].scope, "/secrets/canary") &&
+      endswith(azurerm_role_assignment.key_vault_secret["backend/canary-token-sha256"].scope, "/secrets/canary") &&
       alltrue([for app in [azurerm_container_app.front[0], azurerm_container_app.backend[0]] :
-        one([for item in app.template[0].container[0].env : item.value if item.name == "PREDICTIR_ACCESS_REQUESTS"]) == "1"
+        one([for item in app.template[0].container[0].env : item.value if item.name == "PREDICTIR_ACCESS_REQUESTS"]) == "1" &&
+        one([for item in app.template[0].container[0].env : item.secret_name if item.name == "PREDICTIR_CANARY_TOKEN_HASH"]) == "canary-token-sha256" &&
+        one([for secret in app.secret : secret.key_vault_secret_id if secret.name == "canary-token-sha256"]) == var.live_canary_token_hash_uri
       ]) &&
       one([for item in azurerm_container_app.front[0].template[0].container[0].env : item.secret_name
       if item.name == "PREDICTIR_ACCESS_OWNER_HASH"]) == "access-owner" &&
       one([for item in azurerm_container_app.backend[0].template[0].container[0].env : item.secret_name
       if item.name == "PREDICTIR_ACCESS_VAPID_PRIVATE_KEY"]) == "access-push"
     )
-    error_message = "Only the frontend may read the owner verifier. Only the backend may read the push private key."
+    error_message = "Scope owner, push and canary secrets to the app identities that use them."
   }
 }
 

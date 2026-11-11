@@ -49,6 +49,7 @@ locals {
     spotify-client-id     = "SPOTIFY_CLIENT_ID"
     spotify-client-secret = "SPOTIFY_CLIENT_SECRET"
     x-bearer-token        = "X_BEARER_TOKEN"
+    canary-token-sha256   = "PREDICTIR_CANARY_TOKEN_HASH"
     access-owner          = "PREDICTIR_ACCESS_OWNER_HASH"
     access-push           = "PREDICTIR_ACCESS_VAPID_PRIVATE_KEY"
   }
@@ -172,7 +173,7 @@ resource "azurerm_container_app" "backend" {
       readiness_probe {
         transport               = "HTTP"
         port                    = 8780
-        path                    = "/healthz"
+        path                    = local.live ? "/readyz" : "/healthz"
         initial_delay           = 5
         interval_seconds        = 15
         timeout                 = 3

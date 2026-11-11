@@ -1,0 +1,19 @@
+ContainerAppConsoleLogs
+| where TimeGenerated > ago(24h)
+| where ContainerAppName == "PREDICTIR_BACKEND_APP" and Log has "finished"
+| extend Event = parse_json(Log)
+| where tostring(Event.event) == "request.finished"
+| extend Route = tostring(Event.route), Status = toint(Event.status), DurationMs = todouble(Event.duration_ms)
+| where (Route startswith "/api/" or Route == "/mcp") and not(Route startswith "/api/internal/")
+| where Route !in ("/api/health", "/api/stream", "/api/portfolio/stream") and isnotnull(DurationMs)
+| summarize Samples = count(),
+    ServerErrors = countif(Status >= 500),
+    Throttled = countif(Status == 429),
+    P50ms = percentile(DurationMs, 50),
+    Tail95 = percentile(DurationMs, 95),
+    Tail99 = percentile(DurationMs, 99)
+    by Route
+| project Route, Samples, ServerErrors, Throttled, P50ms = round(P50ms, 1),
+    P95ms = iff(Samples >= 20, round(Tail95, 1), real(null)),
+    P99ms = iff(Samples >= 100, round(Tail99, 1), real(null))
+| order by Samples desc

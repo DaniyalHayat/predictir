@@ -4,9 +4,9 @@
 
 Compare live exchange prices with supported independent forecasts, inspect the evidence, and practise with a paper portfolio.
 
-[Open Predictir](https://predictir.dev) · [Azure edition](https://predictirazv2k8lc-front.bravesky-edec19fa.centralus.azurecontainerapps.io) · [Checks](https://github.com/DaniyalHayat/predictir/actions)
+[Request preview access](https://predictir.dev/access) · [Azure edition](https://predictirazv2k8lc-front.bravesky-edec19fa.centralus.azurecontainerapps.io) · [Checks](https://github.com/DaniyalHayat/predictir/actions)
 
-Both deployments require a private invitation link. Predictir accounts belong to this app only.
+Request access to the main preview or open a private invitation link you already have. Predictir accounts belong to this app only.
 
 ## What you can do
 

@@ -16,6 +16,23 @@ variable "enable_saved_logs" {
   default     = false
 }
 
+variable "enable_database_readiness_alert" {
+  description = "Enable a 15-minute Azure Monitor log alert for sustained database readiness failures when live apps and saved logs are enabled. Include the $0.50 monthly retail estimate in the existing spending review."
+  type        = bool
+  default     = false
+}
+
+variable "database_readiness_action_group_id" {
+  description = "Optional existing Azure Monitor action group for readiness notifications. Without one, alert state is available in Azure Monitor."
+  type        = string
+  default     = null
+
+  validation {
+    condition     = var.database_readiness_action_group_id == null ? true : can(regex("(?i)^/subscriptions/[0-9a-f-]{36}/resourcegroups/[^/]+/providers/microsoft\\.insights/actiongroups/[^/]+$", var.database_readiness_action_group_id))
+    error_message = "Provide an existing Azure Monitor action group resource ID."
+  }
+}
+
 variable "profile" {
   description = "Replay runs the embedded fixture without a database or external provider credentials. Live enables the private PostgreSQL foundation."
   type        = string
@@ -218,6 +235,17 @@ variable "private_share_token_sha256" {
   validation {
     condition     = !var.private_share_access_enabled || can(regex("^[a-f0-9]{64}$", var.private_share_token_sha256))
     error_message = "Enabled private share access requires a lowercase SHA256 verifier."
+  }
+}
+
+variable "live_canary_token_hash_uri" {
+  description = "Optional versioned Key Vault reference containing the SHA256 verifier for a separately generated read-only canary token."
+  type        = string
+  default     = null
+
+  validation {
+    condition     = var.live_canary_token_hash_uri == null ? true : can(regex("^https://[a-z0-9-]+\\.vault\\.azure\\.net/secrets/[a-zA-Z0-9-]+/[a-f0-9]{32}$", var.live_canary_token_hash_uri))
+    error_message = "Use a versioned Key Vault secret URI for the canary verifier."
   }
 }
 
