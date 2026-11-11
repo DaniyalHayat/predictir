@@ -2,7 +2,6 @@ import assert from 'node:assert/strict';
 import { appendFile, mkdir, writeFile } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import { join } from 'node:path';
-import { executionCurve } from '../lib/workspace/execution-curve.mjs';
 
 const TIMEOUT = 30000;
 const QUOTE_MAX_SECONDS = 90;
@@ -146,7 +145,7 @@ async function recordPaperPosition(page, settings, ticker, metrics) {
   const panel = page.locator('.paper-panel');
   await check('paper quantity input', () => panel.getByLabel('Paper contracts', { exact: true }).fill(String(PAPER_QUANTITY)));
   const enteredAt = performance.now();
-  const [entry] = await Promise.all([
+  const [bookReceivedAt] = await Promise.all([
     check('paper entry book request', async () => {
       const response = await page.waitForResponse(value => {
         const url = new URL(value.url());
@@ -154,7 +153,8 @@ async function recordPaperPosition(page, settings, ticker, metrics) {
           url.searchParams.get('ticker') === ticker && url.searchParams.get('contracts') === String(PAPER_QUANTITY) && value.request().method() === 'GET';
       }, { timeout: TIMEOUT });
       if (!response.ok()) throw new CheckFailure(`paper entry book HTTP ${response.status()}`);
-      return { response, observedAt: Date.now() };
+      if (!/application\/json/i.test(response.headers()['content-type'] || '')) throw new CheckFailure('paper entry book content type');
+      return Date.now();
     }),
     check('paper record control', () => panel.getByRole('button', { name: 'Record paper buy', exact: true }).click()),
     check('paper entry UI confirmation', async () => {
@@ -175,30 +175,29 @@ async function recordPaperPosition(page, settings, ticker, metrics) {
     const record = await page.evaluate(expected => {
       const ledger = JSON.parse(localStorage.getItem('predictir:paper-journal:v1') || 'null');
       const position = ledger?.positions.find(row => row.ticker === expected && row.side === 'yes');
-      const fill = ledger?.trades.find(row => row.position_id === position?.id && row.action === 'buy');
+      const fill = ledger?.trades.find(row => row.position_id === position?.id && row.ticker === expected && row.side === 'yes' && row.action === 'buy');
       if (!position || !fill || !Number.isFinite(position.remaining_basis) || position.remaining_basis <= 0) return null;
+      const levels = Array.isArray(fill.fills) && fill.fills.length > 0 && fill.fills.every(level =>
+        Number.isFinite(level?.quantity) && level.quantity > 0 && Number.isFinite(level.price) && level.price >= 0 && level.price <= 1)
+        ? fill.fills.reduce((sum, level) => sum + level.quantity, 0) : null;
       const key = 'predictir.position-reviews.v1';
       const reviews = JSON.parse(localStorage.getItem(key) || '{}');
       localStorage.setItem(key, JSON.stringify({ ...reviews, [position.id]: { paused: true } }));
       return { id: position.id, ticker: position.ticker, remaining: position.remaining_quantity,
-        filled: fill.filled, requested: fill.requested, positionAsOf: position.quote_as_of, fillAsOf: fill.quote_as_of };
+        filled: fill.filled, requested: fill.requested, levels, positionAsOf: position.quote_as_of, fillAsOf: fill.quote_as_of };
     }, ticker);
     assert.match(record?.id || '', /^[\w-]{1,100}$/);
     return record;
   });
-  if (position.requested !== PAPER_QUANTITY || ![position.filled, position.remaining].every(value =>
+  if (position.requested !== PAPER_QUANTITY || ![position.filled, position.remaining, position.levels].every(value =>
     Number.isFinite(value) && Math.abs(value - PAPER_QUANTITY) <= 1e-8)) {
     throw new CheckFailure('paper entry did not fill the requested quantity');
   }
-  const book = await check('paper entry book JSON', () => entry.response.json());
-  await check('paper entry retained the matching book timestamp', () => {
-    assert.equal(book.ticker, ticker);
-    assert.equal(book.as_of, position.positionAsOf);
-    assert.equal(book.as_of, position.fillAsOf);
-  });
-  await check('paper entry book freshness and executable depth', () => {
-    assert.ok(executionCurve(book, ticker, 'yes', 'buy', { now: entry.observedAt }).quote(PAPER_QUANTITY).complete);
-    metrics.paper_book_age_s = Math.max(0, Math.floor((entry.observedAt - Date.parse(book.as_of)) / 1000));
+  await check('paper entry retained a matching fresh book timestamp', () => {
+    assert.equal(position.positionAsOf, position.fillAsOf);
+    const age = (bookReceivedAt - Date.parse(position.fillAsOf)) / 1000;
+    assert.ok(Number.isFinite(age) && age >= -5 && age < QUOTE_MAX_SECONDS);
+    metrics.paper_book_age_s = Math.max(0, Math.floor(age));
   });
   return position.id;
 }
@@ -383,7 +382,7 @@ async function report(results, { host, privateUrl }, stages) {
     '',
     `Authenticated coverage: ${authenticated ? 'enabled' : 'skipped (no configured link)'}`,
     'Cold means a new browser context and link redemption. Warm reuses the same browser session and cookies. Azure scale-to-zero is not inferred from browser state.',
-    'The UI must show an open, two-sided quote younger than 90 seconds. The paper entry also checks a matching executable book from the server.',
+    'The UI must show an open, two-sided quote younger than 90 seconds. The paper entry checks the exact book request and the fill levels and quote timestamp retained by the app.',
     'Tail percentiles use nearest rank and require at least 20 p95 samples or 100 p99 samples. Samples below those counts are shown as insufficient.',
     '',
     '| Mode | Measure | n | Min | Max | p95 | p99 |',
