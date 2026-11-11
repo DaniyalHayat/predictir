@@ -13,9 +13,15 @@ export async function enqueuePipeline(s=store(),now=Date.now()){
   for(const job of jobs)await s.db.query('INSERT INTO market_lab.jobs(key,kind,input) VALUES($1,$2,$3) ON CONFLICT DO NOTHING',[job.key,job.kind,job.input]);
 }
 export async function runPipelineJob(s=store(),handlers={}){
-  const owner=randomUUID(),claimed=await s.db.query(`WITH candidate AS (
+  const owner=randomUUID(),claimed=await s.db.query(`WITH exhausted AS (
+    SELECT key FROM market_lab.jobs WHERE state='running' AND attempts>=4 AND locked_until<=now()
+    ORDER BY available_at,key FOR UPDATE SKIP LOCKED LIMIT 4
+  ), failed AS (
+    UPDATE market_lab.jobs j SET state='failed',finished_at=now(),locked_until=NULL,error_code='JOB_LEASE_EXPIRED'
+    FROM exhausted e WHERE j.key=e.key
+  ), candidate AS (
     SELECT key FROM market_lab.jobs WHERE available_at<=now() AND attempts<4 AND
-      (state='pending' OR(state='running' AND locked_until<now())) ORDER BY available_at,key FOR UPDATE SKIP LOCKED LIMIT 1)
+      (state='pending' OR(state='running' AND locked_until<=now())) ORDER BY available_at,key FOR UPDATE SKIP LOCKED LIMIT 1)
     UPDATE market_lab.jobs j SET state='running',owner=$1,locked_until=now()+interval '5 minutes',attempts=attempts+1
     FROM candidate c WHERE j.key=c.key RETURNING j.*`,[owner]);
   const job=claimed.rows[0];if(!job)return null;
