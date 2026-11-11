@@ -13,6 +13,7 @@ const hosts = ['canonical', 'azure'];
 const modes = ['public', 'cold', 'warm'];
 const measures = {
   entry_ms: 'Open private gate (ms)',
+  workspace_entry_ms: 'Open authenticated workspace (ms)',
   workspace_entry_ms: 'Open workspace (ms)',
   catalog_ms: 'First market rows (ms)',
   contract_ms: 'Select contract (ms)',
@@ -78,10 +79,12 @@ export function historySummary({host, rows, runs = [], current, incomplete = fal
     ['passed', 'failed', 'public-only', 'cancelled', 'missing'].map(status => [status, entries.filter(row => row.status === status).length]),
   );
   const evaluated = counts.passed + counts.failed;
+  const publicChecks = entries.filter(row => row.results?.public?.length).length;
   const lines = [
     `## Hosted browser checks over the last 30 days · ${host}`,
     '',
     `Authenticated passes: ${counts.passed} of ${evaluated} evaluated runs. Failed checks or setup: ${counts.failed}. Public-only: ${counts['public-only']}. Cancelled: ${counts.cancelled}. Missing results: ${counts.missing}.`,
+    `Public gate verified: ${publicChecks} runs.`,
     `Current check: ${current.status}.`,
     '',
     'Cold opens a fresh browser and redeems a link. Warm reuses the same browser. Neither measures whether a cloud replica started from zero.',

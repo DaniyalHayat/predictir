@@ -6,6 +6,7 @@ import { executionCurve } from '../lib/workspace/execution-curve.mjs';
 
 const TIMEOUT = 30000;
 const QUOTE_MAX_SECONDS = 90;
+const PAPER_QUANTITY = 2;
 const VIEWPORT = { width: 1600, height: 1000 };
 const ASSISTANT_MODES = new Set(['deterministic-contract-brief', 'azure-deterministic', 'azure-foundry']);
 const ASSISTANT_TRANSPORTS = new Set(['MCP Streamable HTTP', 'MCP In-Process']);
@@ -20,7 +21,7 @@ const MEASURES = {
   ask_first_ms: 'Ask Why to first answer text',
   ask_complete_ms: 'Ask Why to complete answer',
   paper_tab_ms: 'Open paper-position view',
-  paper_entry_ms: 'Record one browser-local paper contract',
+  paper_entry_ms: 'Record browser-local paper contracts',
   paper_book_age_s: 'Executable entry book age (seconds)',
   portfolio_ms: 'Open My Trades to ledger read',
   journey_ms: 'Full browser journey'
@@ -136,6 +137,72 @@ async function caption(page, text) {
   await page.waitForTimeout(900);
 }
 
+async function recordPaperPosition(page, settings, ticker, metrics) {
+  await check('paper guest ledger readiness', async () => {
+    const guest = await page.waitForFunction(() => localStorage.getItem('predictir:active-account:v1')?.startsWith('guest:'),
+      undefined, { timeout: TIMEOUT });
+    await guest.dispose();
+  });
+  const panel = page.locator('.paper-panel');
+  await check('paper quantity input', () => panel.getByLabel('Paper contracts', { exact: true }).fill(String(PAPER_QUANTITY)));
+  const enteredAt = performance.now();
+  const [entry] = await Promise.all([
+    check('paper entry book request', async () => {
+      const response = await page.waitForResponse(value => {
+        const url = new URL(value.url());
+        return url.origin === settings.publicUrl.origin && url.pathname === '/api/book' &&
+          url.searchParams.get('ticker') === ticker && url.searchParams.get('contracts') === String(PAPER_QUANTITY) && value.request().method() === 'GET';
+      }, { timeout: TIMEOUT });
+      if (!response.ok()) throw new CheckFailure(`paper entry book HTTP ${response.status()}`);
+      return { response, observedAt: Date.now() };
+    }),
+    check('paper record control', () => panel.getByRole('button', { name: 'Record paper buy', exact: true }).click()),
+    check('paper entry UI confirmation', async () => {
+      const recorded = panel.getByText(/^Recorded [\d,.]+ paper contract/);
+      const refusal = panel.locator('.notice.error[role="alert"]').first();
+      await recorded.or(refusal).first().waitFor({ timeout: TIMEOUT });
+      if (await refusal.isVisible()) {
+        const reason = await refusal.innerText();
+        if (/live book|depth|quote|Crossed public book/i.test(reason)) throw new CheckFailure('paper entry refused by quote or depth validation');
+        if (/cannot be saved|could not be saved|account could not|guest session/i.test(reason)) throw new CheckFailure('paper entry refused by guest ledger');
+        if (/confirmed open|trading close/i.test(reason)) throw new CheckFailure('paper entry refused for a closed contract');
+        throw new CheckFailure('paper entry refused by the app');
+      }
+    })
+  ]);
+  metrics.paper_entry_ms = elapsed(enteredAt);
+  const position = await check('paper entry retained in guest ledger', async () => {
+    const record = await page.evaluate(expected => {
+      const ledger = JSON.parse(localStorage.getItem('predictir:paper-journal:v1') || 'null');
+      const position = ledger?.positions.find(row => row.ticker === expected && row.side === 'yes');
+      const fill = ledger?.trades.find(row => row.position_id === position?.id && row.action === 'buy');
+      if (!position || !fill || !Number.isFinite(position.remaining_basis) || position.remaining_basis <= 0) return null;
+      const key = 'predictir.position-reviews.v1';
+      const reviews = JSON.parse(localStorage.getItem(key) || '{}');
+      localStorage.setItem(key, JSON.stringify({ ...reviews, [position.id]: { paused: true } }));
+      return { id: position.id, ticker: position.ticker, remaining: position.remaining_quantity,
+        filled: fill.filled, requested: fill.requested, positionAsOf: position.quote_as_of, fillAsOf: fill.quote_as_of };
+    }, ticker);
+    assert.match(record?.id || '', /^[\w-]{1,100}$/);
+    return record;
+  });
+  if (position.requested !== PAPER_QUANTITY || ![position.filled, position.remaining].every(value =>
+    Number.isFinite(value) && Math.abs(value - PAPER_QUANTITY) <= 1e-8)) {
+    throw new CheckFailure('paper entry did not fill the requested quantity');
+  }
+  const book = await check('paper entry book JSON', () => entry.response.json());
+  await check('paper entry retained the matching book timestamp', () => {
+    assert.equal(book.ticker, ticker);
+    assert.equal(book.as_of, position.positionAsOf);
+    assert.equal(book.as_of, position.fillAsOf);
+  });
+  await check('paper entry book freshness and executable depth', () => {
+    assert.ok(executionCurve(book, ticker, 'yes', 'buy', { now: entry.observedAt }).quote(PAPER_QUANTITY).complete);
+    metrics.paper_book_age_s = Math.max(0, Math.floor((entry.observedAt - Date.parse(book.as_of)) / 1000));
+  });
+  return position.id;
+}
+
 async function journey(page, settings, { cold = false, demo = false, priorPosition = null } = {}) {
   const metrics = {};
   const started = performance.now();
@@ -245,48 +312,16 @@ async function journey(page, settings, { cold = false, demo = false, priorPositi
     let positionId = priorPosition?.id;
     const positionTicker = priorPosition?.ticker || ticker;
     if (!positionId) {
-      positionId = await check('browser-local paper entry', async () => {
-        const guest = await page.waitForFunction(() => localStorage.getItem('predictir:active-account:v1')?.startsWith('guest:'),
-          undefined, { timeout: TIMEOUT });
-        await guest.dispose();
-        await page.getByLabel('Paper contracts', { exact: true }).fill('1');
-        const enteredAt = performance.now();
-        const [entry] = await Promise.all([
-          page.waitForResponse(response => {
-            const url = new URL(response.url());
-            return url.origin === settings.publicUrl.origin && url.pathname === '/api/book' &&
-              url.searchParams.get('ticker') === ticker && url.searchParams.get('contracts') === '1' && response.request().method() === 'GET';
-          }, { timeout: TIMEOUT }),
-          page.getByRole('button', { name: 'Record paper buy', exact: true }).click(),
-          page.getByText(/^Recorded 1 paper contract/).waitFor({ timeout: TIMEOUT })
-        ]);
-        assert.ok(entry.ok());
-        const book = await entry.json();
-        const now = Date.now();
-        assert.ok(executionCurve(book, ticker, 'yes', 'buy', { now }).quote(1).complete);
-        metrics.paper_book_age_s = Math.max(0, Math.floor((now - Date.parse(book.as_of)) / 1000));
-        const id = await page.evaluate(expected => {
-          const ledger = JSON.parse(localStorage.getItem('predictir:paper-journal:v1') || 'null');
-          const position = ledger?.positions.find(row => row.ticker === expected && row.remaining_quantity === 1);
-          if (!position || !Number.isFinite(position.remaining_basis) || position.remaining_basis <= 0) return null;
-          const key = 'predictir.position-reviews.v1';
-          const reviews = JSON.parse(localStorage.getItem(key) || '{}');
-          localStorage.setItem(key, JSON.stringify({ ...reviews, [position.id]: { paused: true } }));
-          return position.id;
-        }, ticker);
-        assert.match(id || '', /^[\w-]{1,100}$/);
-        mark('paper_entry_ms', enteredAt);
-        return id;
-      });
+      positionId = await recordPaperPosition(page, settings, ticker, metrics);
     }
-    await clip('4 / 4 · One simulated contract from current depth, saved in this guest browser');
+    await clip('4 / 4 · Simulated contracts from current depth, saved in this guest browser');
     await check('My Trades ledger read', async () => {
       const openedAt = performance.now();
       await page.getByRole('button', { name: 'My Trades', exact: true }).click();
       await page.getByRole('heading', { name: 'Portfolio', exact: true }).waitFor({ timeout: TIMEOUT });
       const position = page.locator(`[data-position-id="${positionId}"]`);
       await position.getByText(positionTicker, { exact: true }).waitFor({ timeout: TIMEOUT });
-      assert.match(await position.locator('.position-side').innerText(), /\b1 contracts?$/);
+      assert.match(await position.locator('.position-side').innerText(), new RegExp(`\\b${PAPER_QUANTITY} contracts?$`));
       const marked = await position.locator('.position-values > div').filter({ hasText: 'Net exit value' }).locator('strong');
       await marked.waitFor({ timeout: TIMEOUT });
       await page.waitForFunction(id => [...(document.querySelector(`[data-position-id="${id}"]`)?.querySelectorAll('.position-values > div') || [])]
