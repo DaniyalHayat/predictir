@@ -1,10 +1,11 @@
 locals {
-  location   = var.location
-  live       = var.azure_enabled && var.profile == "live"
-  apps       = var.azure_enabled && (var.profile == "replay" || var.launch_live_apps)
-  identities = local.live || (local.apps && var.existing_acr != null)
-  bootstrap  = local.live && var.live_bootstrap != null
-  saved_logs = local.live && var.enable_saved_logs
+  location        = var.location
+  live            = var.azure_enabled && var.profile == "live"
+  apps            = var.azure_enabled && (var.profile == "replay" || var.launch_live_apps)
+  identities      = local.live || (local.apps && var.existing_acr != null)
+  bootstrap       = local.live && var.live_bootstrap != null
+  saved_logs      = local.live && var.enable_saved_logs
+  access_requests = local.live && local.apps && var.private_share_access_enabled ? var.live_access_requests : null
 
   postgres_monthly_base_usd = var.location == "centralus" ? 18.69 : 16.59
   minimum_approval_usd      = var.profile == "live" ? 25 : 1
@@ -83,6 +84,22 @@ resource "terraform_data" "release_approval" {
     }
 
     precondition {
+      condition = var.live_access_requests == null ? true : (
+        local.access_requests == null || var.live_secrets == null ? false : (
+          alltrue([for uri in local.access_secret_uris :
+            startswith(uri, "https://${lower(element(reverse(split("/", var.live_secrets.vault_resource_id)), 0))}.vault.azure.net/secrets/")
+          ]) &&
+          length(distinct(local.access_secret_names)) == length(local.access_secret_uris) &&
+          length(setintersection(local.access_secret_names, [
+            for uri in concat([var.live_secrets.edge_secret_uri, var.live_secrets.assistant_secret_uri, var.live_secrets.account_secret_uri, var.live_secrets.database_url_uri, var.live_secrets.database_ca_uri], values(var.live_secrets.provider_secret_uris)) :
+            try(lower(split("/", uri)[4]), "")
+          ])) == 0
+        )
+      )
+      error_message = "Access requests require the live private preview and distinct secrets in its existing Key Vault."
+    }
+
+    precondition {
       condition = var.live_secrets == null || var.subscription_id == null ? true : startswith(
         lower(var.live_secrets.vault_resource_id), "/subscriptions/${lower(var.subscription_id)}/"
       )
@@ -153,10 +170,15 @@ resource "azurerm_role_assignment" "registry_pull" {
 }
 
 locals {
-  front_secrets = local.live && var.live_secrets != null ? {
+  access_secret_uris = local.access_requests == null ? [] : concat(
+    [local.access_requests.owner_hash_uri], local.access_requests.push == null ? [] : [local.access_requests.push.private_key_uri]
+  )
+  access_secret_names = [for uri in local.access_secret_uris : try(lower(split("/", uri)[4]), "")]
+
+  front_secrets = local.live && var.live_secrets != null ? merge({
     edge      = var.live_secrets.edge_secret_uri
     assistant = var.live_secrets.assistant_secret_uri
-  } : {}
+  }, local.access_requests == null ? {} : { access-owner = local.access_requests.owner_hash_uri }) : {}
 
   backend_secrets = local.live && var.live_secrets != null ? merge({
     edge        = var.live_secrets.edge_secret_uri
@@ -164,7 +186,9 @@ locals {
     account     = var.live_secrets.account_secret_uri
     database    = var.live_secrets.database_url_uri
     database-ca = var.live_secrets.database_ca_uri
-  }, var.live_secrets.provider_secret_uris) : {}
+    }, var.live_secrets.provider_secret_uris, local.access_requests == null ? {} : (
+    local.access_requests.push == null ? {} : { access-push = local.access_requests.push.private_key_uri }
+  )) : {}
 
   secret_grants = merge(
     { for name, uri in local.front_secrets : "front/${name}" => { app = "front", uri = uri } },

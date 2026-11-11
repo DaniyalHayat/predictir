@@ -11,12 +11,17 @@ locals {
   })
 
   private_share_environment = { PREDICTIR_SHARE_ACCESS = var.private_share_access_enabled ? "1" : "0" }
+  access_environment = local.access_requests == null ? {} : merge({
+    PREDICTIR_ACCESS_REQUESTS = "1"
+    }, local.access_requests.push == null ? {} : {
+    PREDICTIR_ACCESS_VAPID_PUBLIC_KEY = local.access_requests.push.public_key
+  })
 
   front_environment = merge(local.private_share_environment, {
     PORT           = "3000"
     PREDICTIR_MODE = var.profile
     APP_ORIGIN     = local.public_origin
-  }, local.live ? local.owner_front_environment : {})
+  }, local.live ? local.owner_front_environment : {}, local.access_environment)
 
   backend_environment = merge(local.private_share_environment, {
     PORT           = "8780"
@@ -26,7 +31,10 @@ locals {
     PREDICTIR_DATABASE_HOST  = azurerm_postgresql_flexible_server.live[0].fqdn
     MARKET_STREAM_MINUTES    = "2400"
     MARKET_STREAM_BYTE_LIMIT = "1000000000"
-    } : {}, local.live && var.keep_apps_warm ? { PREDICTIR_KEEP_CATALOG_WARM = "1" } : {}, local.live ? local.owner_backend_environment : {},
+    } : {}, local.live && var.keep_apps_warm ? { PREDICTIR_KEEP_CATALOG_WARM = "1" } : {}, local.live ? local.owner_backend_environment : {}, local.access_environment,
+    local.access_requests == null ? {} : (local.access_requests.push == null ? {} : {
+      PREDICTIR_ACCESS_VAPID_SUBJECT = local.access_requests.push.subject
+    }),
     contains(keys(local.backend_secrets), "x-bearer-token") ? {
       X_MONTHLY_POST_READ_LIMIT = "250"
       X_MONTHLY_COST_CENTS      = "150"
@@ -41,6 +49,8 @@ locals {
     spotify-client-id     = "SPOTIFY_CLIENT_ID"
     spotify-client-secret = "SPOTIFY_CLIENT_SECRET"
     x-bearer-token        = "X_BEARER_TOKEN"
+    access-owner          = "PREDICTIR_ACCESS_OWNER_HASH"
+    access-push           = "PREDICTIR_ACCESS_VAPID_PRIVATE_KEY"
   }
 }
 

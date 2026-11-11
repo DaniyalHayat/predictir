@@ -221,6 +221,32 @@ variable "private_share_token_sha256" {
   }
 }
 
+variable "live_access_requests" {
+  description = "Optional owner review queue for the live private preview. Supply only versioned Key Vault references for the owner verifier and push private key."
+  type = object({
+    owner_hash_uri = string
+    push = optional(object({
+      public_key      = string
+      private_key_uri = string
+      subject         = string
+    }))
+  })
+  default = null
+
+  validation {
+    condition = var.live_access_requests == null ? true : (
+      alltrue([
+        for uri in concat([var.live_access_requests.owner_hash_uri], var.live_access_requests.push == null ? [] : [var.live_access_requests.push.private_key_uri]) :
+        can(regex("^https://[a-z0-9-]+\\.vault\\.azure\\.net/secrets/[a-zA-Z0-9-]+/[a-f0-9]{32}$", uri))
+        ]) && (var.live_access_requests.push == null ? true : (
+        can(regex("^B[A-Za-z0-9_-]{86}$", var.live_access_requests.push.public_key)) &&
+        can(regex("^(https://[a-zA-Z0-9.-]+/?|mailto:[^@[:space:]]+@[^@[:space:]]+\\.[^@[:space:]]+)$", var.live_access_requests.push.subject))
+      ))
+    )
+    error_message = "Use versioned Key Vault secret URIs, a VAPID public key, and an HTTPS origin or mailto subject."
+  }
+}
+
 variable "live_owner" {
   description = "Optional existing single-tenant Entra owner application and the one approved user's object ID. Values are identifiers, not secrets."
   type = object({

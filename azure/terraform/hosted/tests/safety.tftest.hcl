@@ -425,6 +425,67 @@ run "image_tags_are_rejected" {
   expect_failures = [var.images]
 }
 
+run "access_requests_require_a_live_private_preview" {
+  command = plan
+
+  variables {
+    azure_enabled = true
+    live_access_requests = {
+      owner_hash_uri = "https://fixturevault.vault.azure.net/secrets/access-owner/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    }
+  }
+
+  expect_failures = [terraform_data.release_approval]
+}
+
+run "live_access_requests_scope_owner_and_push_secrets" {
+  command = plan
+
+  variables {
+    azure_enabled                = true
+    profile                      = "live"
+    postgres_admin_password      = "isolated-mock-input-not-a-secret"
+    launch_live_apps             = true
+    live_database_ready          = true
+    private_share_access_enabled = true
+    private_share_token_sha256   = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+
+    live_secrets = {
+      vault_resource_id    = "/subscriptions/11111111-1111-1111-1111-111111111111/resourceGroups/fixture/providers/Microsoft.KeyVault/vaults/fixturevault"
+      edge_secret_uri      = "https://fixturevault.vault.azure.net/secrets/edge/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      assistant_secret_uri = "https://fixturevault.vault.azure.net/secrets/assistant/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      account_secret_uri   = "https://fixturevault.vault.azure.net/secrets/account/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      database_url_uri     = "https://fixturevault.vault.azure.net/secrets/db-url/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      database_ca_uri      = "https://fixturevault.vault.azure.net/secrets/db-ca/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    }
+    live_access_requests = {
+      owner_hash_uri = "https://fixturevault.vault.azure.net/secrets/access-owner/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      push = {
+        public_key      = "B${join("", [for i in range(86) : "A"])}"
+        private_key_uri = "https://fixturevault.vault.azure.net/secrets/access-push/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        subject         = "https://predictir.example"
+      }
+    }
+  }
+
+  assert {
+    condition = (
+      contains(keys(azurerm_role_assignment.key_vault_secret), "front/access-owner") &&
+      contains(keys(azurerm_role_assignment.key_vault_secret), "backend/access-push") &&
+      !contains(keys(azurerm_role_assignment.key_vault_secret), "backend/access-owner") &&
+      !contains(keys(azurerm_role_assignment.key_vault_secret), "front/access-push") &&
+      alltrue([for app in [azurerm_container_app.front[0], azurerm_container_app.backend[0]] :
+        one([for item in app.template[0].container[0].env : item.value if item.name == "PREDICTIR_ACCESS_REQUESTS"]) == "1"
+      ]) &&
+      one([for item in azurerm_container_app.front[0].template[0].container[0].env : item.secret_name
+      if item.name == "PREDICTIR_ACCESS_OWNER_HASH"]) == "access-owner" &&
+      one([for item in azurerm_container_app.backend[0].template[0].container[0].env : item.secret_name
+      if item.name == "PREDICTIR_ACCESS_VAPID_PRIVATE_KEY"]) == "access-push"
+    )
+    error_message = "Only the frontend may read the owner verifier. Only the backend may read the push private key."
+  }
+}
+
 run "existing_acr_uses_identity_without_runtime_secrets" {
   command = plan
 
