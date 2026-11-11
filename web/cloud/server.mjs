@@ -27,6 +27,7 @@ import {shareAccessEnabled,shareCookieAuthorized,PRIVATE_HEADERS} from '../lib/p
 import {azureMode,azureOrigin} from '../lib/workspace/azure-mode.mjs';
 import {createPaperScenarioActions,paperActionError} from '../lib/workspace/paper-actions.mjs';
 import {HEADLINE_REPLAY_MAX_BYTES} from '../lib/workspace/proxy.mjs';
+import {ACCESS_REQUESTS_INTERNAL_PATH,createAccessRequestsBackend,scrubExpiredAccessRequests} from '../lib/workspace/access-requests-backend.mjs';
 
 const mime={'.html':'text/html; charset=utf-8','.js':'text/javascript; charset=utf-8','.css':'text/css; charset=utf-8','.json':'application/json','.svg':'image/svg+xml','.png':'image/png'};
 const productionDefault=process.env.NODE_ENV==='production'||Boolean(process.env.RAILWAY_ENVIRONMENT_ID);
@@ -57,6 +58,7 @@ export async function readBody(req,maximum=16000){
 export function createMarketServer({feed:injectedFeed,storageEnabled=cloudEnabled,storage=store,now=Date.now,
   production=productionDefault,edgeSecret=process.env.MARKET_EDGE_SECRET,serviceSecret=process.env.ASSISTANT_SERVICE_SECRET,
   shareAccess=shareAccessEnabled(),shareTokenHash=process.env.PREDICTIR_SHARE_TOKEN_HASH,
+  accessRequestsEnabled=process.env.PREDICTIR_ACCESS_REQUESTS==='1',
   getRoute=GET,postRoute=POST,mcp=handleMCP,researchReadback=localResearchReadback,publicRoot=resolve(process.env.MARKET_PUBLIC_DIR||fileURLToPath(new URL('../public',import.meta.url))),
   streamMonthlyMinutes=Number(process.env.MARKET_STREAM_MINUTES||18000),streamMonthlyBytes=Number(process.env.MARKET_STREAM_BYTE_LIMIT||60000000000),
   streamMaxConnections=Number(process.env.MARKET_STREAM_MAX_CONNECTIONS||32),streamMaxPerIP=Number(process.env.MARKET_STREAM_MAX_PER_IP||8),
@@ -70,6 +72,8 @@ export function createMarketServer({feed:injectedFeed,storageEnabled=cloudEnable
     const level=values.status>=500?'error':values.status>=400?'warn':'info',safe=sanitizeOperationalRecord(event,values,level);
     logger?.(event,safe);logPipeline.log(event,safe,level);
   }
+  const handleAccessRequest=createAccessRequestsBackend({edgeSecret,now,log:recordLog});
+  let lastAccessScrub=-Infinity;
   const eventLoop=monitorEventLoopDelay({resolution:20});
   const isAzure=azureMode()==='live';
   let lastAllowanceObservation=-Infinity, allowanceObservationActive=false;
@@ -243,6 +247,19 @@ export function createMarketServer({feed:injectedFeed,storageEnabled=cloudEnable
       const identity=requestIdentity(req,edgeVerified);
       if(shareAccess)for(const [name,value]of Object.entries(PRIVATE_HEADERS))res.setHeader(name,value);
       if(url.pathname==='/healthz'&&['GET','HEAD'].includes(req.method))return json(res,{status:'ok'});
+      if(url.pathname===ACCESS_REQUESTS_INTERNAL_PATH){
+        if(!shareAccess||!accessRequestsEnabled||url.search)return json(res,{error:'Unknown API route'},404);
+        if(!edgeVerified)return json(res,{error:'Service authorization required'},401);
+        if(req.method!=='POST'){res.setHeader('Allow','POST');return json(res,{error:'Use POST.'},405);}
+        if(!allowed(identity)){res.setHeader('Retry-After','60');return throttle('throttle_general_admission',{error:'Rate limit reached. Retry in one minute.'});}
+        if(!validOrigin(req.headers.origin))return json(res,{error:'This origin is not allowed'},403);
+        if(String(req.headers['content-type']||'').split(';',1)[0].trim().toLowerCase()!=='application/json')
+          return json(res,{error:'Use application/json.'},415);
+        const input=JSON.parse(await readBody(req,4096));
+        if(disabled&&input?.action==='request')return json(res,{error:'Access requests are temporarily unavailable.'},503);
+        const result=await handleAccessRequest(storageEnabled()?storage():null,input);
+        return json(res,result.value,result.code);
+      }
       if(shareAccess&&!serviceAuthorized(req.headers.authorization,serviceSecret)&&
         (!edgeVerified||!shareCookieAuthorized(req.headers.cookie,shareEnv,now())))return json(res,{error:'A private Predictir link is required.'},401);
       if(!allowed(identity)){res.setHeader('Retry-After','60');return throttle('throttle_general_admission',{error:'Rate limit reached. Retry in one minute.'});}
@@ -411,6 +428,10 @@ export function createMarketServer({feed:injectedFeed,storageEnabled=cloudEnable
     let activeStorage;
     try{activeStorage=storage();const stop=await activeStorage.get('config#cost');disabled=Boolean(stop?.disabled)||used>0&&!await activeStorage.consume('cpu-ms#'+new Date(now()).toISOString().slice(0,10),1800000,Math.min(used,1800000));}
     catch{disabled=true;}
+    if(shareAccess&&accessRequestsEnabled&&now()-lastAccessScrub>=3600000){
+      lastAccessScrub=now();
+      try{await scrubExpiredAccessRequests(activeStorage);}catch{recordLog('access.cleanup_failed',{status:503});}
+    }
     if(isAzure&&production)await observeAllowances(activeStorage);
   },30000);monitor.unref();server.on('listening',()=>eventLoop.enable());server.on('close',()=>{clearInterval(monitor);eventLoop.disable();publicFeed?.close();});
   return server;

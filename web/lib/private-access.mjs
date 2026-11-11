@@ -36,15 +36,23 @@ export function privateAccessResponse(request,env=process.env,now=Date.now()){
   return Response.json({error:'A private Predictir link is required.'},{status:401,headers:PRIVATE_HEADERS});
 }
 export function publicAccessPath(pathname){
-  return ['/access','/api/access/redeem','/api/access/logout','/healthz','/favicon.ico','/favicon.svg','/robots.txt','/hibp-verification.txt','/google7653305cfae6f81b.html'].includes(pathname)||pathname.startsWith('/_next/static/');
+  return ['/access','/access/manage','/access/manifest.webmanifest','/access/push.js','/access/icon-192.png','/access/icon-512.png',
+    '/api/access/request','/api/access/request/status','/api/access/manage','/api/access/manage/sign-in',
+    '/api/access/redeem','/api/access/logout','/healthz','/favicon.ico','/favicon.svg','/robots.txt','/hibp-verification.txt','/google7653305cfae6f81b.html'].includes(pathname)||pathname.startsWith('/_next/static/');
 }
-function originAllowed(request,env){
+export function accessOriginAllowed(request,env){
   const origin=request.headers.get('origin');if(!origin)return false;
   try{
     const parsed=new URL(origin),own=new URL(request.url);
     if(parsed.origin!==origin||!['https:','http:'].includes(parsed.protocol))return false;
     return origin===(env.APP_ORIGIN||own.origin);
   }catch{return false;}
+}
+export function issueShareCookie(env=process.env,now=Date.now()){
+  const config=settings(env);
+  if(!shareAccessEnabled(env)||!config)return null;
+  const encoded=Buffer.from(JSON.stringify({v:1,h:config.hash,exp:Math.floor(now/1000)+SHARE_COOKIE_SECONDS})).toString('base64url');
+  return SHARE_COOKIE+'='+encoded+'.'+signature(encoded,config.key)+'; Path=/; Secure; HttpOnly; SameSite=Lax; Max-Age='+SHARE_COOKIE_SECONDS;
 }
 function allowance(request,env,now){
   const slot=Math.floor(now/60000),ip=request.headers.get('x-vercel-forwarded-for')?.split(',')[0]?.trim()||request.headers.get('x-forwarded-for')?.split(',')[0]?.trim()||'unknown';
@@ -67,20 +75,18 @@ async function accessBody(request){
 export async function redeemShareAccess(request,{env=process.env,now=Date.now()}={}){
   if(request.method!=='POST')return Response.json({error:'Use POST.'},{status:405,headers:PRIVATE_HEADERS});
   if(!shareAccessEnabled(env)||!settings(env))return Response.json({error:'Private access is not configured.'},{status:503,headers:PRIVATE_HEADERS});
-  if(!originAllowed(request,env)||new URL(request.url).search)return Response.json({error:'Open the private link directly.'},{status:403,headers:PRIVATE_HEADERS});
+  if(!accessOriginAllowed(request,env)||new URL(request.url).search)return Response.json({error:'Open the private link directly.'},{status:403,headers:PRIVATE_HEADERS});
   if(!allowance(request,env,now))return Response.json({error:'Too many attempts. Try again in one minute.'},{status:429,headers:{...PRIVATE_HEADERS,'Retry-After':'60'}});
   try{
     const value=await accessBody(request);
     if(!value||Object.keys(value).length!==1||typeof value.token!=='string'||!/^[A-Za-z0-9_-]{43,128}$/.test(value.token))return Response.json({error:'This private link is invalid or expired.'},{status:401,headers:PRIVATE_HEADERS});
     const config=settings(env),hash=createHash('sha256').update(value.token).digest('hex');
     if(!sameBytes(Buffer.from(hash),Buffer.from(config.hash)))return Response.json({error:'This private link is invalid or expired.'},{status:401,headers:PRIVATE_HEADERS});
-    const encoded=Buffer.from(JSON.stringify({v:1,h:config.hash,exp:Math.floor(now/1000)+SHARE_COOKIE_SECONDS})).toString('base64url');
-    const cookie=SHARE_COOKIE+'='+encoded+'.'+signature(encoded,config.key)+'; Path=/; Secure; HttpOnly; SameSite=Lax; Max-Age='+SHARE_COOKIE_SECONDS;
-    return new Response(null,{status:204,headers:{...PRIVATE_HEADERS,'Set-Cookie':cookie}});
+    return new Response(null,{status:204,headers:{...PRIVATE_HEADERS,'Set-Cookie':issueShareCookie(env,now)}});
   }catch(error){return Response.json({error:'The private link could not be opened.'},{status:[413,415].includes(error.status)?error.status:400,headers:PRIVATE_HEADERS});}
 }
 export async function logoutShareAccess(request,{env=process.env}={}){
   if(request.method!=='POST')return Response.json({error:'Use POST.'},{status:405,headers:PRIVATE_HEADERS});
-  if(!originAllowed(request,env))return Response.json({error:'Open this action from Predictir.'},{status:403,headers:PRIVATE_HEADERS});
+  if(!accessOriginAllowed(request,env))return Response.json({error:'Open this action from Predictir.'},{status:403,headers:PRIVATE_HEADERS});
   return new Response(null,{status:204,headers:{...PRIVATE_HEADERS,'Set-Cookie':SHARE_COOKIE+'=; Path=/; Secure; HttpOnly; SameSite=Lax; Max-Age=0'}});
 }
