@@ -2,7 +2,7 @@ import {randomBytes} from 'node:crypto';
 import {NextResponse} from 'next/server';
 import type {NextRequest} from 'next/server';
 import {contentSecurityPolicy} from './lib/security-policy.mjs';
-import {shareAccessEnabled,shareCookieAuthorized,publicAccessPath,PRIVATE_HEADERS} from './lib/private-access.mjs';
+import {shareAccessEnabled,shareAccessKind,privateAccessAllowed,publicAccessPath,PRIVATE_HEADERS} from './lib/private-access.mjs';
 
 export function proxy(request:NextRequest){
   const nonce=randomBytes(18).toString('base64');
@@ -11,7 +11,7 @@ export function proxy(request:NextRequest){
   requestHeaders.set('x-nonce',nonce);
   requestHeaders.set('Content-Security-Policy',policy);
   let response:NextResponse;
-  if(shareAccessEnabled()&&!publicAccessPath(request.nextUrl.pathname)&&!shareCookieAuthorized(request.headers.get('cookie'))){
+  if(!publicAccessPath(request.nextUrl.pathname)&&!privateAccessAllowed(shareAccessKind(request.headers.get('cookie')),request.nextUrl,request.method)){
     response=request.nextUrl.pathname.startsWith('/api/')||request.nextUrl.pathname.startsWith('/_next/data/')
       ?NextResponse.json({error:'A private Predictir link is required.'},{status:401})
       :NextResponse.redirect(new URL('/access',request.url));

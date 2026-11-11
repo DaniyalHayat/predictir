@@ -37,7 +37,7 @@ export function createRuntimeTelemetry({routes = [], providers = [], sampleSize 
   const allowedRoutes = sanitize(routes), allowedProviders = sanitize(providers), distributions = new Map(), errors = new Map();
   const requestThrottles = new Map();
   function observe(kind, input, durationMs, failed) {
-    const allow = kind === 'request' ? allowedRoutes : allowedProviders, label = allow.has(input) ? input : 'other', key = `${kind}:${label}`;
+    const allow = kind === 'provider' ? allowedProviders : allowedRoutes, label = allow.has(input) ? input : 'other', key = `${kind}:${label}`;
     if (!distributions.has(key)) distributions.set(key, new Distribution(sampleSize));
     if (!distributions.get(key).observe(durationMs)) return false;
     if (failed) errors.set(key, (errors.get(key) || 0) + 1);
@@ -55,6 +55,7 @@ export function createRuntimeTelemetry({routes = [], providers = [], sampleSize 
       return recorded;
     },
     observeProvider({provider, durationMs, failed = false}) { return observe('provider', provider, durationMs, failed); },
+    observeStream({route, durationMs}) { return observe('stream', route, durationMs, false); },
     snapshot() {
       return {quantile_scope: 'last bounded samples per process, not a fleet percentile', sample_capacity: sampleSize,
         request_throttles_scope: 'process lifetime, resets on restart',
@@ -82,7 +83,7 @@ export function createRuntimeTelemetry({routes = [], providers = [], sampleSize 
 }
 
 const operationalRoutes = new Set([
-  '/api/health', '/api/session', '/api/account/login', '/api/account/logout', '/api/account/profile', '/api/account/portfolio',
+  '/readyz', '/api/health', '/api/session', '/api/account/login', '/api/account/logout', '/api/account/profile', '/api/account/portfolio',
   '/api/book', '/api/market', '/api/markets', '/api/trades', '/api/history', '/api/brief', '/api/fees', '/api/resolve',
   '/api/stream', '/api/portfolio/stream', '/api/journal', '/api/paper/size', '/api/export.xlsx',
   '/api/workspace/catalog', '/api/workspace/markets', '/api/workspace/portfolio-books', '/api/workspace/context',

@@ -1,5 +1,5 @@
 import {createHash,timingSafeEqual} from 'node:crypto';
-import {privateAccessResponse} from '../private-access.mjs';
+import {accessOriginAllowed,privateAccessResponse,shareAccessKind,PRIVATE_HEADERS} from '../private-access.mjs';
 import {Client} from '@modelcontextprotocol/sdk/client/index.js';
 import {StreamableHTTPClientTransport} from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import {gateway,streamText,tool,jsonSchema,stepCountIs} from 'ai';
@@ -11,6 +11,7 @@ import {applicationOriginMatches} from './proxy.mjs';
 import {azureAccess} from './azure-access.mjs';
 import {azureBackendOrigin,azureMode,azureOrigin} from './azure-mode.mjs';
 import {assistantPanels,azureResearchAnswer,azureResearchPacket,azureToolArguments,planResearchReadback} from './azure-research.mjs';
+import {assistantContext} from './assistant-context.mjs';
 const MODEL='google/gemini-2.5-flash-lite';
 const sourceLinks=sources=>'Sources checked: '+sources.map(({url,label})=>'['+(String(label||new URL(url).hostname).replace(/[\[\]\r\n]/g,' ').slice(0,100))+']('+url.replaceAll('(','%28').replaceAll(')','%29')+')').join(', ');
 const money=value=>new Intl.NumberFormat('en-US',{style:'currency',currency:'USD'}).format(value);
@@ -194,7 +195,7 @@ export function assistantChargeUnits(usage){
 const azureFailure=(error,status)=>Response.json({error},{status,headers:{'Cache-Control':'no-store',...(status===429?{'Retry-After':'60'}:{})}});
 const azureAllowanceMessage='The research assistant allowance is exhausted. Market data remains available.';
 
-async function azureReadback(request,{ticker,messages,model,executionControls,panel,detail},{createClient,fetcher,countryLookup,env,foundryFetcher}){
+async function azureReadback(request,{ticker,messages,model,executionControls,panel,detail},{createClient,fetcher,countryLookup,env,foundryFetcher,canary}){
   const access=await azureAccess(request.headers,countryLookup);
   if(access.status!==200)return azureFailure(access.status===403?'This service is unavailable in your region.':'The regional access check is temporarily unavailable.',access.status);
   const backend=azureBackendOrigin(env.MARKET_BACKEND_URL,{allowLoopback:!env.CONTAINER_APP_NAME&&env.PREDICTIR_AZURE_LOCAL==='1'});
@@ -212,7 +213,7 @@ async function azureReadback(request,{ticker,messages,model,executionControls,pa
   const authorize=async ({signal:deadline})=>(await reserve('foundry',deadline))?.allowed===true;
   const respond=async (packets,transport,timings=[])=>{
     const {answer,mode}=await azureResearchAnswer({question,ticker,panel,detail,executionControls,packets,tools,
-      explain:{contract:explainContract,math:explainResearchMath,execution:explainExecutionMath},authorize,signal,env,foundryFetcher});
+      explain:{contract:explainContract,math:explainResearchMath,execution:explainExecutionMath},authorize,signal,env:canary?{}:env,foundryFetcher});
     signal.throwIfAborted();
     return new Response(answer,{headers:{'Content-Type':'text/plain; charset=utf-8','Cache-Control':'no-store','X-Content-Type-Options':'nosniff',
       'X-Research-Model':mode,'X-Research-Transport':transport,...(timings.length?{'Server-Timing':timings.join(', ')}:{})}});
@@ -265,7 +266,10 @@ async function azureReadback(request,{ticker,messages,model,executionControls,pa
 }
 
 export async function assistantResponse(request,{createClient,generate=streamText,fetcher=fetchJSON,countryLookup,env=process.env,foundryFetcher}={}){
-  const denied=privateAccessResponse(request,env);if(denied)return denied;
+  const now=Date.now(),denied=privateAccessResponse(request,env,now);if(denied)return denied;
+  const canary=shareAccessKind(request.headers.get('cookie'),env,now)==='canary';
+  if(canary&&(!accessOriginAllowed(request,env)||request.headers.get('sec-fetch-site')==='cross-site'))
+    return Response.json({error:'Open Ask Why from Predictir.'},{status:403,headers:PRIVATE_HEADERS});
   let client;
   try{
     const edition=azureMode(env.PREDICTIR_MODE||null);
@@ -284,8 +288,11 @@ export async function assistantResponse(request,{createClient,generate=streamTex
     if(reader){try{while(true){const {value,done}=await reader.read();if(done)break;bytes+=value.byteLength;if(bytes>20000){await reader.cancel();throw new RangeError('Chat request too large');}chunks.push(value);}}finally{reader.releaseLock();}}
     const text=Buffer.concat(chunks).toString('utf8');
     const input=parseAssistantInput(JSON.parse(text));
+    if(canary&&(input.panel!=='analysis'||input.detail!=='full'||input.executionControls||input.messages.length!==1||
+      input.messages[0].content!==assistantContext('analysis',input.ticker,{detail:'full'}).question))
+      return Response.json({error:'The canary only supports the selected contract’s Ask Why preview.'},{status:401,headers:PRIVATE_HEADERS});
     if(edition==='live'){
-      try{return await azureReadback(request,input,{createClient,fetcher,countryLookup,env,foundryFetcher});}
+      try{return await azureReadback(request,input,{createClient,fetcher,countryLookup,env,foundryFetcher,canary});}
       catch(error){
         if(error?.status===429||error?.code===429)return azureFailure(azureAllowanceMessage,429);
         return azureFailure('The assistant could not reach its research service. Try again shortly.',503);

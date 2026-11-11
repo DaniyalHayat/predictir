@@ -21,11 +21,11 @@ export function createLogPipeline({write = line => process.stdout.write(line + '
   if (!(successSampleRate >= 0 && successSampleRate <= 1) || !Number.isInteger(normalPerMinute) || normalPerMinute < 1 || !Number.isInteger(errorsPerMinute) || errorsPerMinute < 1) throw new RangeError('Invalid log budget');
   let minute = -1, normal = 0, errors = 0, written = 0, sampled = 0, throttled = 0;
   return {
-    log(event, fields = {}, level = 'info') {
+    log(event, fields = {}, level = 'info', {sample = true} = {}) {
       const record = sanitizeOperationalRecord(event, fields, level), nowMinute = Math.floor(clock() / 60000);
       if (nowMinute !== minute) { minute = nowMinute; normal = 0; errors = 0; }
       const important = level === 'error' || level === 'warn' || record.status >= 500;
-      if (!important) {
+      if (!important && sample) {
         const key = fields.trace_id || `${event}:${written + sampled + throttled}`;
         const fraction = createHash('sha256').update(key).digest().readUInt32BE(0) / 0x100000000;
         if (fraction >= successSampleRate) { sampled++; return false; }

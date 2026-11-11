@@ -10,15 +10,17 @@ import {cloudEnabled,store} from '../../../lib/cloud/store.mjs';
 import {parseExecutionRequest,workspaceExecutionResearch} from '../../../lib/workspace/execution-service.mjs';
 import {readProxyBody} from '../../../lib/workspace/proxy.mjs';
 import {localPositionReview} from '../../../lib/workspace/mcp.mjs';
+import {shareAccessKind} from '../../../lib/private-access.mjs';
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 export const maxDuration = 800;
 export async function GET(request, context) {
+  const guestOnly=shareAccessKind(request.headers.get('cookie'))==='canary';
   const {path} = await context.params, endpoint = path.join("/"), params = new URL(request.url).searchParams;
   if(endpoint==='workspace/graphql')return Response.json({errors:[{message:'Use POST for the headline replay operation.'}]},
     {status:405,headers:{Allow:'POST','Cache-Control':'no-store'}});
   if(!context.privateRuntime){const proxied=await proxyBackend(request,path);if(proxied)return proxied;}
-  if(endpoint==='session'||endpoint.startsWith('account/'))return makeAccountHandler({storage:cloudEnabled()?store():null})(request,endpoint);
+  if(endpoint==='session'||endpoint.startsWith('account/'))return makeAccountHandler({storage:!guestOnly&&cloudEnabled()?store():null})(request,endpoint,{guestOnly});
   const vertical = params.get("vertical") || "Macro", ticker = params.get("ticker"), contracts = params.has("contracts") ? Number(params.get("contracts")) : 100;
   const headers = {"Cache-Control":"no-store"};
   try {

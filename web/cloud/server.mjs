@@ -21,9 +21,10 @@ import {isCountryAllowed} from '../lib/workspace/geo.mjs';
 import {traceContext} from '../lib/runtime-observability.mjs';
 import {runtimeTelemetry,observeProviderAttempt,operationalRoute,throttleReason} from '../lib/runtime/telemetry.mjs';
 import {createLogPipeline,sanitizeOperationalRecord} from '../lib/runtime/log-pipeline.mjs';
+import {createDatabaseReadiness} from '../lib/runtime/database-readiness.mjs';
 import {handleOperatorMCP} from '../lib/runtime/operator-mcp.mjs';
 import {makeAccountHandler} from '../lib/workspace/account.mjs';
-import {shareAccessEnabled,shareCookieAuthorized,PRIVATE_HEADERS} from '../lib/private-access.mjs';
+import {shareAccessEnabled,shareAccessKind,privateAccessAllowed,PRIVATE_HEADERS} from '../lib/private-access.mjs';
 import {azureMode,azureOrigin} from '../lib/workspace/azure-mode.mjs';
 import {createPaperScenarioActions,paperActionError} from '../lib/workspace/paper-actions.mjs';
 import {HEADLINE_REPLAY_MAX_BYTES} from '../lib/workspace/proxy.mjs';
@@ -33,6 +34,8 @@ const mime={'.html':'text/html; charset=utf-8','.js':'text/javascript; charset=u
 const productionDefault=process.env.NODE_ENV==='production'||Boolean(process.env.RAILWAY_ENVIRONMENT_ID);
 const rateWindowMs=60000,azureHeavyRequestsPerWindow=12;
 const allowanceObservationMs=5*60*1000;
+const interactiveLatencyRoutes=new Set(['/api/workspace/catalog','/api/workspace/markets','/api/workspace/research',
+  '/api/workspace/evidence/search','/api/book','/api/account/portfolio','/mcp']);
 class LocalThrottle extends Error {
   constructor(message,reason){
     super(message);this.status=429;this.reason=reason;
@@ -57,21 +60,28 @@ export async function readBody(req,maximum=16000){
 }
 export function createMarketServer({feed:injectedFeed,storageEnabled=cloudEnabled,storage=store,now=Date.now,
   production=productionDefault,edgeSecret=process.env.MARKET_EDGE_SECRET,serviceSecret=process.env.ASSISTANT_SERVICE_SECRET,
-  shareAccess=shareAccessEnabled(),shareTokenHash=process.env.PREDICTIR_SHARE_TOKEN_HASH,
+  shareAccess=shareAccessEnabled(),shareTokenHash=process.env.PREDICTIR_SHARE_TOKEN_HASH,canaryTokenHash=process.env.PREDICTIR_CANARY_TOKEN_HASH,
   accessRequestsEnabled=process.env.PREDICTIR_ACCESS_REQUESTS==='1',
   getRoute=GET,postRoute=POST,mcp=handleMCP,researchReadback=localResearchReadback,publicRoot=resolve(process.env.MARKET_PUBLIC_DIR||fileURLToPath(new URL('../public',import.meta.url))),
   streamMonthlyMinutes=Number(process.env.MARKET_STREAM_MINUTES||18000),streamMonthlyBytes=Number(process.env.MARKET_STREAM_BYTE_LIMIT||60000000000),
   streamMaxConnections=Number(process.env.MARKET_STREAM_MAX_CONNECTIONS||32),streamMaxPerIP=Number(process.env.MARKET_STREAM_MAX_PER_IP||8),
-  monthlyAssistantDollars=Number(process.env.ASSISTANT_MONTHLY_BUDGET_USD||3),logger,telemetry=runtimeTelemetry,accountOptions={}}={}){
+  monthlyAssistantDollars=Number(process.env.ASSISTANT_MONTHLY_BUDGET_USD||3),logger,telemetry=runtimeTelemetry,
+  databaseReadinessEnabled=azureMode()==='live',accountOptions={}}={}){
   if(!Number.isInteger(streamMaxConnections)||streamMaxConnections<1||streamMaxConnections>128||
     !Number.isInteger(streamMaxPerIP)||streamMaxPerIP<1||streamMaxPerIP>16||streamMaxPerIP>streamMaxConnections)throw new RangeError('Invalid streaming connection limits');
-  const shareEnv={PREDICTIR_SHARE_ACCESS:shareAccess?'1':'0',PREDICTIR_SHARE_TOKEN_HASH:shareTokenHash,MARKET_EDGE_SECRET:edgeSecret};
+  const shareEnv={PREDICTIR_SHARE_ACCESS:shareAccess?'1':'0',PREDICTIR_SHARE_TOKEN_HASH:shareTokenHash,
+    PREDICTIR_CANARY_TOKEN_HASH:canaryTokenHash,MARKET_EDGE_SECRET:edgeSecret};
   const limits=new Map(),streamByIP=new Map();let connections=0,disabled=false,previousCpu=process.cpuUsage();
   const recentLogs=[],logPipeline=createLogPipeline({write:line=>{const record=JSON.parse(line);recentLogs.push(record);if(recentLogs.length>200)recentLogs.shift();if(production&&!logger)process.stdout.write(line+'\n');}});
-  function recordLog(event,values){
+  function recordLog(event,values,options){
     const level=values.status>=500?'error':values.status>=400?'warn':'info',safe=sanitizeOperationalRecord(event,values,level);
-    logger?.(event,safe);logPipeline.log(event,safe,level);
+    logger?.(event,safe);logPipeline.log(event,safe,level,options);
   }
+  const checkDatabase=createDatabaseReadiness({
+    query:()=>storage().db.query({text:'SELECT 1',query_timeout:1000}),
+    report:values=>recordLog('readiness.database',values,{sample:false}),
+  });
+  const streamOpenedAt=new WeakMap();
   const handleAccessRequest=createAccessRequestsBackend({edgeSecret,now,log:recordLog});
   let lastAccessScrub=-Infinity;
   const eventLoop=monitorEventLoopDelay({resolution:20});
@@ -183,6 +193,7 @@ export function createMarketServer({feed:injectedFeed,storageEnabled=cloudEnable
     }
     catch(error){releaseCount();throw error;}
     req.setTimeout(0);res.writeHead(200,{'Content-Type':'text/event-stream','Cache-Control':'no-cache, no-transform','Connection':'keep-alive','X-Accel-Buffering':'no'});res.flushHeaders();
+    streamOpenedAt.set(res,performance.now());
     const removers=[],latest=new Map();let ticks=0,closed=false,blockedSince=0,checking=false,refilling=false,bytesRemaining=65536;
     const refill=async()=>{if(refilling||closed)return;refilling=true;try{if(await consumeBytes())bytesRemaining+=65536;else res.end();}catch{res.end();}finally{refilling=false;}};
     const send=(message,event)=>{
@@ -234,9 +245,18 @@ export function createMarketServer({feed:injectedFeed,storageEnabled=cloudEnable
     const started=performance.now();let trace,route='other',reported=false,localThrottle;
     const throttle=(reason,value)=>{localThrottle=reason;return json(res,value,429);};
     const report=()=>{if(reported)return;reported=true;const durationMs=Math.round((performance.now()-started)*100)/100;
-      const errorCode=res.statusCode===429?throttleReason(localThrottle):undefined;
-      telemetry.observeRequest({route,status:res.statusCode,durationMs,errorCode});recordLog('request.finished',{method:req.method,route,status:res.statusCode,duration_ms:durationMs,error_code:errorCode,
-      trace_id:trace?.traceId,span_id:trace?.spanId,parent_id:trace?.parentId,baggage_dropped:trace?.baggageDropped,open_streams:connections});};
+      const status=res.headersSent?res.statusCode:499,opened=streamOpenedAt.get(res);
+      const errorCode=status===429?throttleReason(localThrottle):undefined;
+      const fields={method:req.method,route,status,error_code:errorCode,trace_id:trace?.traceId,span_id:trace?.spanId,
+        parent_id:trace?.parentId,baggage_dropped:trace?.baggageDropped,open_streams:connections};
+      if(opened!==undefined){
+        const connectedMs=Math.round((performance.now()-opened)*100)/100;
+        telemetry.observeStream({route,durationMs:connectedMs});
+        recordLog('stream.closed',{...fields,duration_ms:connectedMs});
+        return;
+      }
+      telemetry.observeRequest({route,status,durationMs,errorCode});
+      recordLog('request.finished',{...fields,duration_ms:durationMs},{sample:!interactiveLatencyRoutes.has(route)});};
     res.once('finish',report);res.once('close',report);
     try{
       if(req.url.length>2000)return json(res,{error:'URL too long'},414);
@@ -247,6 +267,10 @@ export function createMarketServer({feed:injectedFeed,storageEnabled=cloudEnable
       const identity=requestIdentity(req,edgeVerified);
       if(shareAccess)for(const [name,value]of Object.entries(PRIVATE_HEADERS))res.setHeader(name,value);
       if(url.pathname==='/healthz'&&['GET','HEAD'].includes(req.method))return json(res,{status:'ok'});
+      if(databaseReadinessEnabled&&url.pathname==='/readyz'&&!url.search&&['GET','HEAD'].includes(req.method)){
+        const status=await checkDatabase();
+        return json(res,{status:status===200?'ready':'unavailable'},status);
+      }
       if(url.pathname===ACCESS_REQUESTS_INTERNAL_PATH){
         if(!shareAccess||!accessRequestsEnabled||url.search)return json(res,{error:'Unknown API route'},404);
         if(!edgeVerified)return json(res,{error:'Service authorization required'},401);
@@ -260,8 +284,9 @@ export function createMarketServer({feed:injectedFeed,storageEnabled=cloudEnable
         const result=await handleAccessRequest(storageEnabled()?storage():null,input);
         return json(res,result.value,result.code);
       }
+      const accessKind=shareAccessKind(req.headers.cookie,shareEnv,now());
       if(shareAccess&&!serviceAuthorized(req.headers.authorization,serviceSecret)&&
-        (!edgeVerified||!shareCookieAuthorized(req.headers.cookie,shareEnv,now())))return json(res,{error:'A private Predictir link is required.'},401);
+        (!edgeVerified||!privateAccessAllowed(accessKind,url,req.method,false)))return json(res,{error:'A private Predictir link is required.'},401);
       if(!allowed(identity)){res.setHeader('Retry-After','60');return throttle('throttle_general_admission',{error:'Rate limit reached. Retry in one minute.'});}
       if(!validOrigin(req.headers.origin))return json(res,{error:'This origin is not allowed'},403);
       if(url.pathname==='/api/health')return json(res,{status:disabled?'limited':'ok',runtime:azureMode()==='live'?'Azure Container Apps':'Railway Node backend',market_data_only:true,
@@ -370,7 +395,8 @@ export function createMarketServer({feed:injectedFeed,storageEnabled=cloudEnable
       if(url.pathname==='/api/session'||url.pathname.startsWith('/api/account/')){
         await quota(2,req.method==='GET'?'paper-reads':'work');const body=['POST','PUT'].includes(req.method)?await readBody(req,url.pathname==='/api/account/portfolio'?1500000:20000):undefined;
         const handler=makeAccountHandler({storage:storageEnabled()?storage():null,secret:process.env.ACCOUNT_COOKIE_SECRET||serviceSecret,secure:production,...accountOptions});
-        const output=await handler(new Request('http://localhost'+req.url,{method:req.method,headers:req.headers,...(body?{body}:{})}),url.pathname.slice(5));
+        const output=await handler(new Request('http://localhost'+req.url,{method:req.method,headers:req.headers,...(body?{body}:{})}),
+          url.pathname.slice(5),{guestOnly:accessKind==='canary'});
         const outputHeaders=Object.fromEntries(output.headers),cookies=output.headers.getSetCookie();if(cookies.length)outputHeaders['set-cookie']=cookies;
         res.writeHead(output.status,outputHeaders);return res.end(Buffer.from(await output.arrayBuffer()));
       }

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import {assistantContext,assistantPayload} from '../ui/assistant-context.mjs';
+import {assistantContext,assistantPayload} from '../lib/workspace/assistant-context.mjs';
 import {readNews} from '../ui/news-reading.mjs';
 import {EXECUTION_DEFAULTS} from '../ui/execution-state.mjs';
 

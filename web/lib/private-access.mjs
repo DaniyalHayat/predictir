@@ -2,37 +2,75 @@ import {createHash,createHmac,timingSafeEqual} from 'node:crypto';
 
 export const SHARE_COOKIE='__Host-predictir-share';
 export const SHARE_COOKIE_SECONDS=86400;
+export const CANARY_COOKIE='__Host-predictir-canary';
+export const CANARY_COOKIE_SECONDS=900;
 export const PRIVATE_HEADERS=Object.freeze({'Cache-Control':'private, no-store','Referrer-Policy':'no-referrer','X-Robots-Tag':'noindex, nofollow, noarchive, nosnippet, noimageindex','X-Content-Type-Options':'nosniff'});
 const limits=globalThis[Symbol.for('predictir.share.limits.v1')] ||= new Map();
 export const shareAccessEnabled=(env=process.env)=>env.PREDICTIR_SHARE_ACCESS==='1';
-function settings(env){
+function settings(env,kind='share'){
   const hash=env.PREDICTIR_SHARE_TOKEN_HASH,key=env.MARKET_EDGE_SECRET;
-  return typeof hash==='string'&&/^[a-f0-9]{64}$/.test(hash)&&typeof key==='string'&&key.length>=32?{hash,key}:null;
+  if(typeof hash!=='string'||!/^[a-f0-9]{64}$/.test(hash)||typeof key!=='string'||key.length<32)return null;
+  if(kind==='share')return {hash,key,cookie:SHARE_COOKIE,seconds:SHARE_COOKIE_SECONDS};
+  const canaryHash=env.PREDICTIR_CANARY_TOKEN_HASH;
+  if(typeof canaryHash!=='string'||!/^[a-f0-9]{64}$/.test(canaryHash)||canaryHash===hash||canaryHash===env.PREDICTIR_ACCESS_OWNER_HASH)return null;
+  return {hash:canaryHash,key,cookie:CANARY_COOKIE,seconds:CANARY_COOKIE_SECONDS};
 }
 function sameBytes(left,right){return left.length===right.length&&timingSafeEqual(left,right);}
-function signature(value,key){return createHmac('sha256',key).update('predictir.share.cookie.v1\0'+value).digest('base64url');}
-export function shareCookieValue(header){
+function signature(value,key,kind){return createHmac('sha256',key).update('predictir.'+kind+'.cookie.v1\0'+value).digest('base64url');}
+export function shareCookieValue(header,cookie=SHARE_COOKIE){
   if(typeof header!=='string'||header.length>16000)return null;
-  const values=header.split(';').map(part=>part.trim()).filter(part=>part.startsWith(SHARE_COOKIE+'='));
-  return values.length===1?values[0].slice(SHARE_COOKIE.length+1):null;
+  const values=header.split(';').map(part=>part.trim()).filter(part=>part.startsWith(cookie+'='));
+  return values.length===1?values[0].slice(cookie.length+1):null;
 }
-export function shareCookieAuthorized(header,env=process.env,now=Date.now()){
-  if(!shareAccessEnabled(env))return true;
-  const config=settings(env),value=shareCookieValue(header);
-  if(!config||!value||value.length>400||!/^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]{43}$/.test(value))return false;
+function validCookie(header,env,now,kind){
+  const config=settings(env,kind);
+  if(!config)return false;
+  const value=shareCookieValue(header,config.cookie);
+  if(!value||value.length>400||!/^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]{43}$/.test(value))return false;
   const [encoded,mac]=value.split('.');
-  if(!sameBytes(Buffer.from(mac),Buffer.from(signature(encoded,config.key))))return false;
+  if(!sameBytes(Buffer.from(mac),Buffer.from(signature(encoded,config.key,kind))))return false;
   try{
     const payload=JSON.parse(Buffer.from(encoded,'base64url').toString('utf8'));
     return Object.keys(payload).length===3&&payload.v===1&&typeof payload.h==='string'&&
-      sameBytes(Buffer.from(payload.h),Buffer.from(config.hash))&&Number.isSafeInteger(payload.exp)&&payload.exp>Math.floor(now/1000)&&payload.exp<=Math.floor(now/1000)+SHARE_COOKIE_SECONDS+60;
+      sameBytes(Buffer.from(payload.h),Buffer.from(config.hash))&&Number.isSafeInteger(payload.exp)&&payload.exp>Math.floor(now/1000)&&payload.exp<=Math.floor(now/1000)+config.seconds+60;
   }catch{return false;}
 }
-export function shareCookieForward(header){
-  const value=shareCookieValue(header);return value?SHARE_COOKIE+'='+value:null;
+export function shareCookieAuthorized(header,env=process.env,now=Date.now()){
+  return !shareAccessEnabled(env)||validCookie(header,env,now,'share');
+}
+export function shareAccessKind(header,env=process.env,now=Date.now()){
+  if(!shareAccessEnabled(env))return 'open';
+  if(validCookie(header,env,now,'share'))return 'share';
+  return validCookie(header,env,now,'canary')?'canary':null;
+}
+const canaryReadPaths=new Set(['/api/health','/api/session','/api/book','/api/stream','/api/workspace/catalog',
+  '/api/workspace/markets','/api/workspace/context','/api/workspace/history','/api/workspace/research','/api/workspace/opinions']);
+export function privateAccessAllowed(kind,url,method,frontend=true){
+  if(kind==='open'||kind==='share')return true;
+  if(kind!=='canary')return false;
+  if(frontend&&url.pathname==='/api/assistant'&&method==='POST'&&!url.search)return true;
+  if(method!=='GET')return false;
+  if(frontend&&url.pathname==='/')return true;
+  if(url.pathname==='/api/workspace/portfolio-books'||url.pathname==='/api/portfolio/stream'){
+    const tickers=url.searchParams.getAll('tickers');
+    return tickers.length===1&&/^[A-Za-z0-9_.-]{1,140}$/.test(tickers[0]);
+  }
+  if(url.pathname==='/api/workspace/evidence'){
+    const flags=url.searchParams.getAll('preview');
+    return flags.length===1&&flags[0]==='1';
+  }
+  return canaryReadPaths.has(url.pathname);
+}
+export function shareCookieForward(header,{canary=false,guest=false}={}){
+  const cookies=canary?[CANARY_COOKIE]:[SHARE_COOKIE];
+  if(guest)cookies.push('__Host-market_guest','market_guest');
+  return cookies.flatMap(cookie=>{
+    const value=shareCookieValue(header,cookie);
+    return value?[cookie+'='+value]:[];
+  }).join('; ')||null;
 }
 export function privateAccessResponse(request,env=process.env,now=Date.now()){
-  if(shareCookieAuthorized(request.headers.get('cookie'),env,now))return null;
+  if(privateAccessAllowed(shareAccessKind(request.headers.get('cookie'),env,now),new URL(request.url),request.method))return null;
   return Response.json({error:'A private Predictir link is required.'},{status:401,headers:PRIVATE_HEADERS});
 }
 export function publicAccessPath(pathname){
@@ -48,11 +86,11 @@ export function accessOriginAllowed(request,env){
     return origin===(env.APP_ORIGIN||own.origin);
   }catch{return false;}
 }
-export function issueShareCookie(env=process.env,now=Date.now()){
-  const config=settings(env);
+export function issueShareCookie(env=process.env,now=Date.now(),kind='share'){
+  const config=settings(env,kind);
   if(!shareAccessEnabled(env)||!config)return null;
-  const encoded=Buffer.from(JSON.stringify({v:1,h:config.hash,exp:Math.floor(now/1000)+SHARE_COOKIE_SECONDS})).toString('base64url');
-  return SHARE_COOKIE+'='+encoded+'.'+signature(encoded,config.key)+'; Path=/; Secure; HttpOnly; SameSite=Lax; Max-Age='+SHARE_COOKIE_SECONDS;
+  const encoded=Buffer.from(JSON.stringify({v:1,h:config.hash,exp:Math.floor(now/1000)+config.seconds})).toString('base64url');
+  return config.cookie+'='+encoded+'.'+signature(encoded,config.key,kind)+'; Path=/; Secure; HttpOnly; SameSite=Lax; Max-Age='+config.seconds;
 }
 function allowance(request,env,now){
   const slot=Math.floor(now/60000),ip=request.headers.get('x-vercel-forwarded-for')?.split(',')[0]?.trim()||request.headers.get('x-forwarded-for')?.split(',')[0]?.trim()||'unknown';
@@ -80,13 +118,20 @@ export async function redeemShareAccess(request,{env=process.env,now=Date.now()}
   try{
     const value=await accessBody(request);
     if(!value||Object.keys(value).length!==1||typeof value.token!=='string'||!/^[A-Za-z0-9_-]{43,128}$/.test(value.token))return Response.json({error:'This private link is invalid or expired.'},{status:401,headers:PRIVATE_HEADERS});
-    const config=settings(env),hash=createHash('sha256').update(value.token).digest('hex');
-    if(!sameBytes(Buffer.from(hash),Buffer.from(config.hash)))return Response.json({error:'This private link is invalid or expired.'},{status:401,headers:PRIVATE_HEADERS});
-    return new Response(null,{status:204,headers:{...PRIVATE_HEADERS,'Set-Cookie':issueShareCookie(env,now)}});
+    const hash=createHash('sha256').update(value.token).digest('hex');
+    const kind=['share','canary'].find(scope=>{
+      const config=settings(env,scope);
+      return config&&sameBytes(Buffer.from(hash),Buffer.from(config.hash));
+    });
+    if(!kind)return Response.json({error:'This private link is invalid or expired.'},{status:401,headers:PRIVATE_HEADERS});
+    return new Response(null,{status:204,headers:{...PRIVATE_HEADERS,'Set-Cookie':issueShareCookie(env,now,kind)}});
   }catch(error){return Response.json({error:'The private link could not be opened.'},{status:[413,415].includes(error.status)?error.status:400,headers:PRIVATE_HEADERS});}
 }
 export async function logoutShareAccess(request,{env=process.env}={}){
   if(request.method!=='POST')return Response.json({error:'Use POST.'},{status:405,headers:PRIVATE_HEADERS});
   if(!accessOriginAllowed(request,env))return Response.json({error:'Open this action from Predictir.'},{status:403,headers:PRIVATE_HEADERS});
-  return new Response(null,{status:204,headers:{...PRIVATE_HEADERS,'Set-Cookie':SHARE_COOKIE+'=; Path=/; Secure; HttpOnly; SameSite=Lax; Max-Age=0'}});
+  const headers=new Headers(PRIVATE_HEADERS);
+  headers.append('Set-Cookie',SHARE_COOKIE+'=; Path=/; Secure; HttpOnly; SameSite=Lax; Max-Age=0');
+  if(shareCookieValue(request.headers.get('cookie'),CANARY_COOKIE))headers.append('Set-Cookie',CANARY_COOKIE+'=; Path=/; Secure; HttpOnly; SameSite=Lax; Max-Age=0');
+  return new Response(null,{status:204,headers});
 }

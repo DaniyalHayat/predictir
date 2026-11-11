@@ -6,7 +6,7 @@ import {ArrowDown,ArrowUp,ArrowUpRight,BookOpen,Check,FlaskConical,MessageSquare
 import {cents,dateLabel,percent} from './api.mjs';
 import {contractTitle} from './selection';
 import {usePanelFocus} from './Modal';
-import {assistantPayload} from './assistant-context.mjs';
+import {assistantPayload} from '../lib/workspace/assistant-context.mjs';
 import {Answer} from './AssistantAnswer';
 import type {Book,Evidence,Launch,Message,Model,Snapshot} from './assistant-types';
 import './assistant-workbench.css';

@@ -4,7 +4,7 @@ import {NextRequest} from 'next/server';
 import {proxy,config} from '../proxy';
 import {contentSecurityPolicy} from '../lib/security-policy.mjs';
 import {createHash} from 'node:crypto';
-import {redeemShareAccess} from '../lib/private-access.mjs';
+import {CANARY_COOKIE,redeemShareAccess} from '../lib/private-access.mjs';
 
 test('page policies use different request nonces and forward matching CSP for framework hydration',()=>{
   const first=proxy(new NextRequest('https://predictir.dev/'));
@@ -33,9 +33,10 @@ test('private HTML, PDFs and APIs stay inside access matching while compiled ass
 });
 
 test('private entry protects HTML, PDFs and data while a redeemed cookie preserves application hydration',async t=>{
-  const keys=['PREDICTIR_SHARE_ACCESS','PREDICTIR_SHARE_TOKEN_HASH','MARKET_EDGE_SECRET'],previous=keys.map(key=>process.env[key]);
-  const token='private-fixture-token-'.repeat(3);
-  Object.assign(process.env,{PREDICTIR_SHARE_ACCESS:'1',PREDICTIR_SHARE_TOKEN_HASH:createHash('sha256').update(token).digest('hex'),MARKET_EDGE_SECRET:'private-fixture-signing-key-'.repeat(3)});
+  const keys=['PREDICTIR_SHARE_ACCESS','PREDICTIR_SHARE_TOKEN_HASH','PREDICTIR_CANARY_TOKEN_HASH','MARKET_EDGE_SECRET'],previous=keys.map(key=>process.env[key]);
+  const token='private-fixture-token-'.repeat(3),canary='canary-fixture-token-'.repeat(3);
+  Object.assign(process.env,{PREDICTIR_SHARE_ACCESS:'1',PREDICTIR_SHARE_TOKEN_HASH:createHash('sha256').update(token).digest('hex'),
+    PREDICTIR_CANARY_TOKEN_HASH:createHash('sha256').update(canary).digest('hex'),MARKET_EDGE_SECRET:'private-fixture-signing-key-'.repeat(3)});
   t.after(()=>keys.forEach((key,index)=>{if(previous[index]===undefined)delete process.env[key];else process.env[key]=previous[index];}));
   for(const path of ['/','/lab.html','/research/research-audit.pdf']){
     const response=proxy(new NextRequest('https://predictir.dev'+path));
@@ -48,4 +49,12 @@ test('private entry protects HTML, PDFs and data while a redeemed cookie preserv
   assert.equal(redeemed.status,204);
   const authorized=proxy(new NextRequest('https://predictir.dev/',{headers:{Cookie:redeemed.headers.get('set-cookie')!.split(';',1)[0]}}));
   assert.equal(authorized.headers.get('x-middleware-next'),'1');assert.ok(authorized.headers.get('x-middleware-request-x-nonce'));
+  const canaryRedemption=await redeemShareAccess(new Request('https://predictir.dev/api/access/redeem',{method:'POST',
+    headers:{Origin:'https://predictir.dev','Content-Type':'application/json','X-Forwarded-For':'192.0.2.201'},body:JSON.stringify({token:canary})}));
+  const Cookie=canaryRedemption.headers.get('set-cookie')!.split(';',1)[0];
+  assert.ok(Cookie.startsWith(CANARY_COOKIE+'='));
+  for(const path of ['/','/api/workspace/markets','/api/session'])
+    assert.equal(proxy(new NextRequest('https://predictir.dev'+path,{headers:{Cookie}})).headers.get('x-middleware-next'),'1',path);
+  assert.equal(proxy(new NextRequest('https://predictir.dev/api/account/portfolio',{headers:{Cookie}})).status,401);
+  assert.equal(proxy(new NextRequest('https://predictir.dev/research/research-audit.pdf',{headers:{Cookie}})).status,307);
 });

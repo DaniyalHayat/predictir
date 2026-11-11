@@ -157,7 +157,7 @@ export function makeAccountHandler({storage,secret=process.env.ACCOUNT_COOKIE_SE
     if(user.id!==current.user_id||String(user.email||'').toLowerCase()!==owner||!user.email_confirmed_at)throw fail('This account is not authorized.',401);
     return {session:current,user,refreshed:current!==session};
   }
-  return async function accountResponse(request,path){
+  return async function accountResponse(request,path,{guestOnly=false}={}){
     try{
       secretKey(secret,'configuration');
       if(!methods[path])throw fail('Unknown account action.',404);
@@ -166,11 +166,12 @@ export function makeAccountHandler({storage,secret=process.env.ACCOUNT_COOKIE_SE
       if(!secure){try{const local=new URL(origin||request.url);if(local.protocol==='http:'&&['localhost','127.0.0.1','[::1]'].includes(local.hostname))allowedOrigins.push(local.origin);}catch{}}
       if(origin&&!allowedOrigins.includes(origin)||['POST','PUT'].includes(request.method)&&!origin)throw fail('Open this action from the application.',403);
       if(request.headers.get('sec-fetch-site')==='cross-site')throw fail('Open this action from the application.',403);
+      if(guestOnly&&path!=='session')throw fail('This preview only supports a guest session.',401);
       if(path==='session'&&request.method==='GET'){
         const guest=guestSession(openSession(readCookie(request,guestCookie),secret,'guest'),now());let account,invalidOwner=false;
-        if(configured&&(azureLive||readCookie(request,ownerCookie))){try{account=await identity(request);}catch(error){if(error.status!==401)throw error;invalidOwner=!azureLive;}}
+        if(!guestOnly&&configured&&(azureLive||readCookie(request,ownerCookie))){try{account=await identity(request);}catch(error){if(error.status!==401)throw error;invalidOwner=!azureLive;}}
         const out=response({kind:account?'owner':'guest',guest:{id:guest.id,created_at:new Date(guest.created).toISOString(),last_active_at:new Date(guest.last).toISOString(),expires_at:new Date(guest.expires).toISOString()},
-          ...(account?{owner:ownerView(account.user)}:{}),...(azureLive?{login_provider:'entra'}:{}),login_configured:configured,signup_enabled:false});
+          ...(account?{owner:ownerView(account.user)}:{}),...(azureLive&&!guestOnly?{login_provider:'entra'}:{}),login_configured:configured&&!guestOnly,signup_enabled:false});
         setCookie(out,guestCookie,sealSession(guest,secret,'guest'),(guest.expires-now())/1000,secure);
         if(account?.refreshed)setCookie(out,ownerCookie,sealSession(account.session,secret,'owner'),(account.session.expires-now())/1000,secure);
         if(invalidOwner)setCookie(out,ownerCookie,'',0,secure);

@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import {assistantResponse} from '../lib/workspace/assistant.mjs';
 import {boundPacket} from '../lib/workspace/mcp.mjs';
-import {assistantContext,assistantPayload} from '../ui/assistant-context.mjs';
+import {assistantContext,assistantPayload} from '../lib/workspace/assistant-context.mjs';
 
 test('automatic full analysis compares current model, reporting and exchange inputs across categories',async t=>{
   const saved={MARKET_BACKEND_URL:process.env.MARKET_BACKEND_URL,ASSISTANT_SERVICE_SECRET:process.env.ASSISTANT_SERVICE_SECRET};

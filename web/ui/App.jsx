@@ -16,7 +16,7 @@ import {researchScreenOpinion,screenFreshness} from './screen-freshness';
 import ContractNews,{ReadMode,ReadText} from './ContractNews.jsx';
 import useAccount,{toggleSavedMarket} from './useAccount.jsx';
 import {CONTRACT_TABS,moveContractTab} from './contract-tabs';
-import {assistantContext} from './assistant-context.mjs';
+import {assistantContext} from '../lib/workspace/assistant-context.mjs';
 import usePaperLedger from './usePaperLedger.jsx';
 import usePositionReviews from './usePositionReviews.jsx';
 import './workspace.css';
