@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { chooseMarket, readQuote } from '../tools/recruiter-check.mjs';
+import { chooseMarket, readQuote, verifyAnswer } from '../tools/recruiter-check.mjs';
 
 const row = (ticker, yes = '48.50¢', no = '52¢') => ({ ticker, yes, no });
 
@@ -10,11 +10,22 @@ test('picks a different contract with two valid sides and a noncrossed quote', (
     row('ONE-SIDED', '—', '52¢'),
     row('CROSSED', '40¢', '45¢'),
     row('INVALID"SELECTOR'),
-    row('NEXT')
+    row('NEXT'),
+    row('ALTERNATE')
   ];
   assert.equal(chooseMarket(candidates, 'CURRENT'), 'NEXT');
+  assert.equal(chooseMarket(candidates, 'CURRENT', new Set(['NEXT'])), 'ALTERNATE');
   assert.equal(chooseMarket(candidates.slice(0, 4), 'CURRENT'), undefined);
   assert.equal(chooseMarket([candidates[0]], 'CURRENT'), 'CURRENT');
+});
+
+test('keeps the selected-contract evidence check strict and reports safe failure reasons', () => {
+  const selection = { ticker: 'NEXT', title: 'Selected market' };
+  const rule = 'Primary settlement rule: The named player wins the specified match in regulation.';
+  assert.doesNotThrow(() => verifyAnswer('Selected market (NEXT)\n'+rule, selection));
+  assert.throws(() => verifyAnswer('Unrelated market\n'+rule, selection), /did not identify/);
+  assert.throws(() => verifyAnswer('Selected market (NEXT)\nThe research did not load.', selection), /unavailable research/);
+  assert.throws(() => verifyAnswer('Selected market (NEXT)\nPlease review the market carefully.', selection), /lacked priced evidence/);
 });
 
 function quotePage({ ticker = 'NEXT', yes = '48.50¢', no = '52¢', age = '3s since observation',

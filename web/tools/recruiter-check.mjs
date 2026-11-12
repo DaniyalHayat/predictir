@@ -6,12 +6,14 @@ import { fileURLToPath } from 'node:url';
 
 const TIMEOUT = 30000;
 const QUOTE_MAX_SECONDS = 90;
+const MAX_MARKET_ATTEMPTS = 3;
 const TICKER_PATTERN = /^[A-Za-z0-9_.-]{1,140}$/;
 const PAPER_QUANTITY = 2;
 const VIEWPORT = { width: 1600, height: 1000 };
 const ASSISTANT_MODES = new Set(['deterministic-contract-brief', 'azure-deterministic', 'azure-foundry']);
 const ASSISTANT_TRANSPORTS = new Set(['MCP Streamable HTTP', 'MCP In-Process']);
 const DEGRADED_ANSWER = /research did not load|did not return usable depth or outcome data|assistant (?:is temporarily unavailable|returned no explanation)|research connection was interrupted|could not reach its research service/i;
+const NONEXECUTABLE_QUOTE = new Set(['contract closed', 'no executable YES ask', 'no executable NO ask', 'quote crossed']);
 const MEASURES = {
   entry_ms: 'Navigation to private gate',
   workspace_entry_ms: 'Private link or session to workspace',
@@ -33,6 +35,8 @@ class CheckFailure extends Error {
     super(stage);
   }
 }
+
+class NonexecutableMarket extends CheckFailure {}
 
 async function check(stage, operation) {
   try {
@@ -72,9 +76,9 @@ function configuration() {
 const elapsed = started => Math.round(performance.now() - started);
 const normalize = text => text.normalize('NFKC').trim().replace(/\s+/g, ' ').toLowerCase();
 
-export function chooseMarket(rows, initiallySelected) {
+export function chooseMarket(rows, initiallySelected, attempted = new Set()) {
   return rows.find(({ ticker, yes, no }) => {
-    if (!TICKER_PATTERN.test(ticker || '') || rows.length > 1 && ticker === initiallySelected) return false;
+    if (!TICKER_PATTERN.test(ticker || '') || attempted.has(ticker) || rows.length > 1 && ticker === initiallySelected) return false;
     const prices = [yes, no].map(text => Number(text?.match(/^(\d+(?:\.\d+)?)¢$/)?.[1]));
     return prices.every(price => price > 0 && price < 100) && prices[0] + prices[1] >= 99.99;
   })?.ticker;
@@ -103,19 +107,31 @@ export function readQuote({ ticker, maximum, diagnose = false }, root = document
 }
 
 async function selectAndObserveQuote(page, rows, selected, settings, mark, metrics) {
-  const ticker = await check('catalog contract selection', async () => {
-    const [initiallySelected, candidates] = await Promise.all([
-      selected.textContent(),
-      rows.evaluateAll(items => items.map(row => ({
-        ticker: row.getAttribute('data-market-ticker'),
-        yes: row.querySelector('.row-prices strong')?.textContent,
-        no: row.querySelector('.row-prices > span')?.textContent
-      })))
-    ]);
-    const chosen = chooseMarket(candidates, initiallySelected);
-    if (!chosen) throw new CheckFailure('catalog has no eligible two-sided contract to select');
-    return chosen;
-  });
+  const [initiallySelected, candidates] = await check('catalog contract selection', () => Promise.all([
+    selected.textContent(),
+    rows.evaluateAll(items => items.map(row => ({
+      ticker: row.getAttribute('data-market-ticker'),
+      yes: row.querySelector('.row-prices strong')?.textContent,
+      no: row.querySelector('.row-prices > span')?.textContent
+    })))
+  ]));
+  const attempted = new Set();
+  let unavailable;
+  while (attempted.size < MAX_MARKET_ATTEMPTS) {
+    const ticker = chooseMarket(candidates, initiallySelected, attempted);
+    if (!ticker) break;
+    attempted.add(ticker);
+    try {
+      return await observeContractQuote(page, rows, ticker, settings, mark, metrics);
+    } catch (error) {
+      if (!(error instanceof NonexecutableMarket)) throw error;
+      unavailable = error;
+    }
+  }
+  throw unavailable || new CheckFailure('catalog has no eligible two-sided contract to select');
+}
+
+async function observeContractQuote(page, rows, ticker, settings, mark, metrics) {
   const row = rows.and(page.locator(`[data-market-ticker="${ticker}"]`));
   const status = new Map();
   const quoteEndpoint = request => {
@@ -157,7 +173,9 @@ async function selectAndObserveQuote(page, rows, selected, settings, mark, metri
       const reason = typeof latest === 'string' ? latest : latest ? 'became usable after timeout' : 'browser state unavailable';
       const book = status.get('/api/book') || 'not observed';
       const stream = status.get('/api/stream') || 'not observed';
-      throw new CheckFailure(`usable quote timed out (${reason}; book ${book}; stream ${stream})`);
+      const message = `usable quote timed out (${reason}; book ${book}; stream ${stream})`;
+      if (book === 'HTTP 200' && NONEXECUTABLE_QUOTE.has(reason)) throw new NonexecutableMarket(message);
+      throw new CheckFailure(message);
     }
     mark('quote_ms', selectedAt);
     return { ticker, title };
@@ -167,15 +185,17 @@ async function selectAndObserveQuote(page, rows, selected, settings, mark, metri
   }
 }
 
-function verifyAnswer(text, { ticker, title }) {
+export function verifyAnswer(text, { ticker, title }) {
   const heading = normalize(text.split('\n').find(line => line.trim()) || '');
   const baseTitle = normalize(title.split(' · ')[0]);
-  assert.ok(text.includes(ticker) || heading === baseTitle || heading === normalize(title));
-  assert.doesNotMatch(text, DEGRADED_ANSWER);
+  if (!text.includes(ticker) && heading !== baseTitle && heading !== normalize(title)) {
+    throw new CheckFailure('Ask Why answer did not identify the selected contract');
+  }
+  if (DEGRADED_ANSWER.test(text)) throw new CheckFailure('Ask Why answer reported unavailable research');
   const pricedEvidence = /\b\d+(?:[.,]\d+)?\s*(?:%|¢|contracts?\b)/i.test(text) &&
     /\b(?:ask|bid|probabilit\w*|chance|fees?|midpoint|payout|settlement)\b/i.test(text);
   const ruleEvidence = /\b(?:settlement rule|resolves to yes|pays (?:if|when))\b[^\n]{20,}/i.test(text);
-  assert.ok(pricedEvidence || ruleEvidence);
+  if (!pricedEvidence && !ruleEvidence) throw new CheckFailure('Ask Why answer lacked priced evidence or a settlement condition');
 }
 
 async function verifyPublicGate(browser, { publicUrl, requestForm }) {
