@@ -17,6 +17,17 @@ import {parsePositionReview,reviewPaperPosition} from './position-review.mjs';
 import {forecastSourceAllowed} from './forecast-source-policy.mjs';
 import {azureToolArguments,planResearchReadback} from './azure-research.mjs';
 
+const OPTIONAL_READBACK_MS=12000;
+
+async function readOptionalSource(read,timeoutMs=OPTIONAL_READBACK_MS){
+  if(timeoutMs<=0)return null;
+  let timer;
+  try{
+    return await Promise.race([read(),new Promise(resolve=>{timer=setTimeout(resolve,timeoutMs,null);})]);
+  }catch{return null;}
+  finally{clearTimeout(timer);}
+}
+
 export function publicResearch(value){
   const music=value.extensions?.music;
   const decision=value.decision?{...value.decision,candidates:value.decision.candidates?.map(candidate=>{
@@ -45,7 +56,8 @@ export function boundPacket(value,maximum=14000){
   }
   const lean={ticker:value.ticker,title:value.title,as_of:value.as_of,summary:value.summary,opinion:value.opinion,
     account_balances_available:value.account_balances_available,units:value.units,forecast:value.forecast,decision:value.decision,
-    paper_scenarios:value.paper_scenarios,market_signal:value.market_signal,evidence:value.evidence,model_context:value.model_context,sources:value.sources,
+    paper_scenarios:value.paper_scenarios,market_signal:value.market_signal,rules:value.rules,evidence:value.evidence,
+    reporting_status:value.reporting_status,model_context:value.model_context,sources:value.sources,
     scope:'Additional details omitted to keep the research packet bounded.'};
   if(Buffer.byteLength(JSON.stringify(lean))<=maximum)return lean;
   const forecast=value.forecast,compact={ticker:value.ticker,title:String(value.title||'').slice(0,180),as_of:value.as_of,
@@ -53,7 +65,9 @@ export function boundPacket(value,maximum=14000){
     forecast:forecast?Object.fromEntries(['probability','interval','eligible','independent_forecast','experimental','model_name',
       'source_as_of','source_url','max_source_age_seconds','reason','outcomes','expected_settlement_value','interval_kind','evidence',
       'release_reason'].filter(key=>forecast[key]!==undefined).map(key=>[key,forecast[key]])):undefined,
-    evidence:(value.evidence||[]).slice(0,5),model_context:value.model_context,sources:(value.sources||[]).filter(row=>typeof row.url==='string'&&row.url.length<=1800).slice(0,6),
+    rules:value.rules?{primary:String(value.rules.primary||'').slice(0,1800),close_time:value.rules.close_time}:undefined,
+    evidence:(value.evidence||[]).slice(0,5),reporting_status:value.reporting_status,model_context:value.model_context,
+    sources:(value.sources||[]).filter(row=>typeof row.url==='string'&&row.url.length<=1800).slice(0,6),
     paper_scenarios:(value.paper_scenarios||[]).slice(0,2),
     scope:'Large model diagnostics omitted; current forecast, dated reporting and paper scenarios retained.'};
   if(Buffer.byteLength(JSON.stringify(compact))<=maximum)return compact;
@@ -86,7 +100,7 @@ export function createResearchServer({tickerScope,modelScope='baseline',executio
       catch{return {isError:true,...output({status:'unavailable',reason:'The selected public research source is temporarily unavailable.'})};}
     });
   register('get_contract','Read the selected public contract rules, exact outcome identity and current public order book. No account or order access.',{ticker},async({ticker})=>{
-    const [detail,observed]=await Promise.all([deps.marketDetails(ticker),deps.book(ticker,1).catch(()=>null)]);
+    const [detail,observed]=await Promise.all([deps.marketDetails(ticker),readOptionalSource(()=>deps.book(ticker,1))]);
     const m=detail?.market,age=Date.now()-Date.parse(observed?.as_of);
     if(m?.ticker!==ticker)throw new Error('Mismatched market details');
     const depth=observed?.ticker===ticker&&age>=-5000&&age<=90000&&observed.metrics?.book_state!=='crossed'?observed:null;
@@ -105,11 +119,15 @@ export function createResearchServer({tickerScope,modelScope='baseline',executio
       sources:[{label:'Kalshi contract',url:detail.source_url,retrieved_at:detail.as_of},...(depth?[{label:'Kalshi order book',url:depth.source_url,retrieved_at:depth.as_of}]:[])]};
   });
   register('get_research','Read public research, paper scenarios, price history models and attributed reporting for the selected contract.',{ticker,include_reporting:z.boolean().default(true)},async({ticker,include_reporting})=>{
+    const started=performance.now();
     const research=await deps.workspaceResearch(ticker,{assistant:true,model:modelScope,
       ...(/^KXNBAGAME-/.test(ticker)&&include_reporting?{refreshAvailability:true}:{})}),packet=publicResearch(research);
     if(!include_reporting||research.market?.ticker!==ticker||(Object.keys(dependencies).length&&!dependencies.contractEvidence))return packet;
-    const evidence=await deps.contractEvidence(research.market,{enabled:true,selectedTicker:ticker,redditEnabled:false,includeX:false,headlineMode:'full',
-      sports:research.extensions?.sports,settlementSources:research.rules?.settlement_sources}).catch(()=>null);
+    const remaining=OPTIONAL_READBACK_MS-(performance.now()-started);
+    const evidence=await readOptionalSource(()=>deps.contractEvidence(research.market,{enabled:true,selectedTicker:ticker,
+      redditEnabled:false,includeX:false,headlineMode:'full',sports:research.extensions?.sports,
+      settlementSources:research.rules?.settlement_sources}),remaining);
+    if(!evidence)return {...packet,reporting_status:'unavailable'};
     const matches=[...(evidence?.items||[]),...(evidence?.official_observations||[]),...(evidence?.related_items||[])].filter(row=>row.url&&row.title).slice(0,5);
     const links=(evidence?.source_links||[]).filter(row=>row.url).slice(0,2);
     return {...packet,model_context:evidenceModelContext(evidence,research),evidence:matches.map(row=>({title:String(row.title).slice(0,180),url:row.url,publisher:row.publisher,

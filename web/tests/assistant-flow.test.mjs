@@ -3,7 +3,7 @@ import test from 'node:test';
 import {once} from 'node:events';
 import {createMarketServer} from '../cloud/server.mjs';
 import {assistantResponse} from '../lib/workspace/assistant.mjs';
-import {boundPacket} from '../lib/workspace/mcp.mjs';
+import {boundPacket,localResearchReadback} from '../lib/workspace/mcp.mjs';
 import {assistantContext,assistantPayload} from '../lib/workspace/assistant-context.mjs';
 
 test('automatic full analysis compares current model, reporting and exchange inputs across categories',async t=>{
@@ -39,7 +39,7 @@ test('automatic full analysis compares current model, reporting and exchange inp
   }
 });
 
-import {azureResearchAnswer,azureToolArguments} from '../lib/workspace/azure-research.mjs';
+import {azureResearchAnswer,azureResearchPacket,azureToolArguments} from '../lib/workspace/azure-research.mjs';
 
 test('canonical Ask Why batches authenticated contract reads and preserves a real quota response',async t=>{
   const ticker='KXTEST-ALPHA',edge='fixture-market-edge-'.repeat(3),secret='fixture-assistant-secret-'.repeat(3);
@@ -120,14 +120,46 @@ test('fresh quotes never present an expired source estimate as a current model c
   assert.doesNotMatch(answer,/independent model estimates 60.0%/);
 });
 
+test('automatic Ask Why returns the selected settlement rule when depth and live reporting exceed their deadline',async t=>{
+  t.mock.timers.enable({apis:['setTimeout']});
+  const ticker='KXTEST-ALPHA',now=Date.now(),as_of=new Date(now).toISOString();
+  const rule='The named player wins the specified match in regulation.';
+  const market={ticker,title:'Selected outcome',rules_primary:rule};
+  const marketRead=Promise.withResolvers(),reportingRead=Promise.withResolvers();
+  const pending=new Promise(()=>{});
+  const panel='analysis',detail='full',question=assistantContext(panel,ticker,{detail}).question;
+  const batch=localResearchReadback({ticker,panel,detail,question,signal:new AbortController().signal,dependencies:{
+    marketDetails:async()=>({market,as_of,source_url:'https://example.com/contract'}),
+    book:()=>{marketRead.resolve();return pending;},
+    workspaceResearch:async()=>({ticker,market,as_of,rules:{primary:rule},forecast:{probability:.6,source_as_of:as_of}}),
+    contractEvidence:()=>{reportingRead.resolve();return pending;},
+    searchRetainedEvidence:async()=>({ticker,status:'empty',citations:[]}),
+  }});
+  await Promise.all([marketRead.promise,reportingRead.promise]);
+  t.mock.timers.tick(12001);
+  const results=await batch;
+  const packets=new Map(results.map(({name,result})=>[name,azureResearchPacket(name,result,ticker)]));
+  assert.equal(packets.get('get_contract').book.status,'unavailable');
+  assert.equal(packets.get('get_research').reporting_status,'unavailable');
+  assert.equal(packets.get('get_research').forecast.probability,.6);
+  const {answer}=await azureResearchAnswer({question,ticker,panel,detail,packets,tools:[...packets.keys()],explain:{math:()=>''},now});
+  assert.ok(answer.includes('Selected outcome ('+ticker+')'));
+  assert.ok(answer.includes('Primary settlement rule: '+rule));
+  assert.match(answer,/The live reporting check did not finish/);
+  assert.doesNotMatch(answer,/current source and retained-evidence checks returned no matched report/);
+});
+
 test('large diagnostics preserve current probability and dated reporting inside MCP bounds',()=>{
   const ticker='KXTEST-ALPHA',as_of=new Date().toISOString();
   const value=boundPacket({ticker,title:'Selected contract',as_of,summary:'Research result',
     forecast:{probability:.61,interval:[.5,.72],source_as_of:as_of,model_name:'Research model',inputs:{diagnostics:'x'.repeat(40000)}},
+    rules:{primary:'The named outcome must occur before the cutoff.'},reporting_status:'unavailable',
     evidence:[{title:'Matched source',url:'https://example.com/source',published_at:as_of,excerpt:'Observed fact'}],
     sources:[{label:'Matched source',url:'https://example.com/source'}]});
   assert.ok(Buffer.byteLength(JSON.stringify(value))<=14000);
   assert.equal(value.forecast.probability,.61);
+  assert.equal(value.rules.primary,'The named outcome must occur before the cutoff.');
+  assert.equal(value.reporting_status,'unavailable');
   assert.equal(value.evidence[0].title,'Matched source');
   assert.equal(value.forecast.inputs,undefined);
 });

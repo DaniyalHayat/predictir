@@ -308,7 +308,7 @@ export async function azureResearchAnswer({question,ticker,panel,detail,executio
   const wants=tool=>tools.includes(tool);
   const current=research&&fresh(research.as_of,now,90000),parts=[],full=detail==='full',guided=Boolean(panel||full);
   const title=clean(contract?.market?.title||research?.title,160);
-  if(guided&&title)parts.push(title+' ('+ticker+')');
+  if(guided)parts.push(title?title+' ('+ticker+')':ticker);
   const side=current&&['YES','NO','PASS'].includes(research.opinion?.side)?research.opinion.side:null;
   const verdict=side?'Research screen: '+side+'. '+(side==='PASS'?'Supported allocation: 0 contracts. ':'')+clean(research.opinion.reason,450):null;
   if(guided&&verdict){
@@ -380,6 +380,10 @@ export async function azureResearchAnswer({question,ticker,panel,detail,executio
     parts.push('For a paper size, enter your own probability range and budget in Paper position. The assistant does not have your account balance or permission to place an order.');
   }
   const reports=current?attributedReports(research,full):[];
+  const reportingUnavailable=research?.reporting_status==='unavailable';
+  if(reportingUnavailable&&(!panel||['analysis','paper','evidence'].includes(panel))){
+    parts.push('The live reporting check did not finish. Refresh contract news to try the source check again.');
+  }
   if(reports.length&&(!panel||['analysis','paper','evidence'].includes(panel))){
     parts.push('## What current reporting adds',clean(research.model_context?.reason,600),...reports);
     if(full)parts.push('Open the linked sources to check publication dates, the named outcome and the observation window. A retrieval timestamp tells you when the source was checked.');
@@ -400,7 +404,8 @@ export async function azureResearchAnswer({question,ticker,panel,detail,executio
     }else{
       if(reports.length){
         parts.push('The live source check above returned the available reporting. The retained index has no additional matching excerpts for this question.');
-      }else if(retained)parts.push('The current source and retained-evidence checks returned no matched report for this exact outcome. The model inputs and quote comparison above remain available.');
+      }else if(retained)parts.push(reportingUnavailable?'The retained index has no matching excerpt for this exact outcome.':
+        'The current source and retained-evidence checks returned no matched report for this exact outcome. The model inputs and quote comparison above remain available.');
       else parts.push('The retained evidence search did not complete. Refresh the selected contract news to retry it.');
     }
   }
