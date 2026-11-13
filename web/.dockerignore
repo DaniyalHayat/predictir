@@ -1,6 +1,16 @@
 node_modules
 .next
+*.tsbuildinfo
 .env*
+**/.env*
+.vercel
+**/.vercel
+.private
+**/.private
+*.pem
+**/*.pem
+*.key
+**/*.key
 .research
 tests
 docs

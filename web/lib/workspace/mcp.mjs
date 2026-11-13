@@ -11,7 +11,22 @@ import {searchRetainedEvidence} from './semantic.mjs';
 import {workspaceExecutionResearch,executionToolPacket} from './execution-service.mjs';
 import {normalizeExecutionControls} from './execution-research.mjs';
 import {contractEvidence} from './evidence.mjs';
+import {evidenceModelContext} from './evidence-model-context.mjs';
+import {paperActionError,paperTools} from './paper-actions.mjs';
 import {parsePositionReview,reviewPaperPosition} from './position-review.mjs';
+import {forecastSourceAllowed} from './forecast-source-policy.mjs';
+import {azureToolArguments,planResearchReadback} from './azure-research.mjs';
+
+const OPTIONAL_READBACK_MS=12000;
+
+async function readOptionalSource(read,timeoutMs=OPTIONAL_READBACK_MS){
+  if(timeoutMs<=0)return null;
+  let timer;
+  try{
+    return await Promise.race([read(),new Promise(resolve=>{timer=setTimeout(resolve,timeoutMs,null);})]);
+  }catch{return null;}
+  finally{clearTimeout(timer);}
+}
 
 export function publicResearch(value){
   const music=value.extensions?.music;
@@ -28,7 +43,7 @@ export function publicResearch(value){
   return {ticker:value.ticker,title:value.title,as_of:value.as_of,status:value.status,summary:value.summary,opinion:value.opinion,
     account_balances_available:false,units:{forecast_probability:'P(YES), 0 to 1; multiply by 100 for percent',candidate_probability:'Win probability of the candidate side, 0 to 1',price:'USD per $1 binary payout contract',quantity:'Number of contracts, never an account balance'},
     forecast:value.forecast,decision,drivers:value.drivers,rules:value.rules,paper_scenarios:value.paper_scenarios,market_signal:value.market_signal,
-    sources:(value.sources||[]).filter(s=>!s.url?.includes('api.spotify.com')),
+    sources:(value.sources||[]).filter(s=>forecastSourceAllowed(s.url)),
     errors:value.errors,extensions:{sports:value.extensions?.sports,music:music?{scope:music.scope,comparability:music.comparability,
       forecast:music.forecast,persistence:music.persistence,source_updated:music.apple?.source_updated,scope_note:music.apple?.note}:undefined}};
 }
@@ -41,12 +56,24 @@ export function boundPacket(value,maximum=14000){
   }
   const lean={ticker:value.ticker,title:value.title,as_of:value.as_of,summary:value.summary,opinion:value.opinion,
     account_balances_available:value.account_balances_available,units:value.units,forecast:value.forecast,decision:value.decision,
-    paper_scenarios:value.paper_scenarios,market_signal:value.market_signal,evidence:value.evidence,sources:value.sources,
+    paper_scenarios:value.paper_scenarios,market_signal:value.market_signal,rules:value.rules,evidence:value.evidence,
+    reporting_status:value.reporting_status,model_context:value.model_context,sources:value.sources,
     scope:'Additional details omitted to keep the research packet bounded.'};
   if(Buffer.byteLength(JSON.stringify(lean))<=maximum)return lean;
+  const forecast=value.forecast,compact={ticker:value.ticker,title:String(value.title||'').slice(0,180),as_of:value.as_of,
+    summary:String(value.summary||'').slice(0,1200),opinion:value.opinion,
+    forecast:forecast?Object.fromEntries(['probability','interval','eligible','independent_forecast','experimental','model_name',
+      'source_as_of','source_url','max_source_age_seconds','reason','outcomes','expected_settlement_value','interval_kind','evidence',
+      'release_reason'].filter(key=>forecast[key]!==undefined).map(key=>[key,forecast[key]])):undefined,
+    rules:value.rules?{primary:String(value.rules.primary||'').slice(0,1800),close_time:value.rules.close_time}:undefined,
+    evidence:(value.evidence||[]).slice(0,5),reporting_status:value.reporting_status,model_context:value.model_context,
+    sources:(value.sources||[]).filter(row=>typeof row.url==='string'&&row.url.length<=1800).slice(0,6),
+    paper_scenarios:(value.paper_scenarios||[]).slice(0,2),
+    scope:'Large model diagnostics omitted; current forecast, dated reporting and paper scenarios retained.'};
+  if(Buffer.byteLength(JSON.stringify(compact))<=maximum)return compact;
   return {ticker:String(value.ticker||'').slice(0,140),reason:'The source packet exceeded the display bound. Ask for specific rules, prices or source status.'};
 }
-export function createResearchServer({tickerScope,modelScope='baseline',executionScope,positionScope,dependencies={}}={}) {
+export function createResearchServer({tickerScope,modelScope='baseline',executionScope,paperActions,positionScope,dependencies={}}={}) {
   const deps={marketDetails,book,workspaceResearch,contractHistory,warehouseStatus,providerStatus,searchRetainedEvidence,workspaceExecutionResearch,contractEvidence,...dependencies};
   const server=new McpServer({name:'predictir',version:'4.0.0'});
   if(tickerScope)validateTicker(tickerScope);
@@ -73,7 +100,7 @@ export function createResearchServer({tickerScope,modelScope='baseline',executio
       catch{return {isError:true,...output({status:'unavailable',reason:'The selected public research source is temporarily unavailable.'})};}
     });
   register('get_contract','Read the selected public contract rules, exact outcome identity and current public order book. No account or order access.',{ticker},async({ticker})=>{
-    const [detail,observed]=await Promise.all([deps.marketDetails(ticker),deps.book(ticker,1).catch(()=>null)]);
+    const [detail,observed]=await Promise.all([deps.marketDetails(ticker),readOptionalSource(()=>deps.book(ticker,1))]);
     const m=detail?.market,age=Date.now()-Date.parse(observed?.as_of);
     if(m?.ticker!==ticker)throw new Error('Mismatched market details');
     const depth=observed?.ticker===ticker&&age>=-5000&&age<=90000&&observed.metrics?.book_state!=='crossed'?observed:null;
@@ -91,16 +118,21 @@ export function createResearchServer({tickerScope,modelScope='baseline',executio
           'A fresh, matching order book was unavailable.'},
       sources:[{label:'Kalshi contract',url:detail.source_url,retrieved_at:detail.as_of},...(depth?[{label:'Kalshi order book',url:depth.source_url,retrieved_at:depth.as_of}]:[])]};
   });
-  register('get_research','Read public research, paper scenarios, price history models and attributed reporting for the selected contract.',{ticker},async({ticker})=>{
+  register('get_research','Read public research, paper scenarios, price history models and attributed reporting for the selected contract.',{ticker,include_reporting:z.boolean().default(true)},async({ticker,include_reporting})=>{
+    const started=performance.now();
     const research=await deps.workspaceResearch(ticker,{assistant:true,model:modelScope,
-      ...(/^KXNBAGAME-/.test(ticker)?{refreshAvailability:true}:{})}),packet=publicResearch(research);
-    if(research.market?.ticker!==ticker||(Object.keys(dependencies).length&&!dependencies.contractEvidence))return packet;
-    const evidence=await deps.contractEvidence(research.market,{enabled:true,selectedTicker:ticker,redditEnabled:false,includeX:false,headlineMode:'official',
-      sports:research.extensions?.sports,settlementSources:research.rules?.settlement_sources}).catch(()=>null);
-    const matches=[...(evidence?.items||[]),...(evidence?.related_items||[])].filter(row=>row.url&&row.title).slice(0,3);
+      ...(/^KXNBAGAME-/.test(ticker)&&include_reporting?{refreshAvailability:true}:{})}),packet=publicResearch(research);
+    if(!include_reporting||research.market?.ticker!==ticker||(Object.keys(dependencies).length&&!dependencies.contractEvidence))return packet;
+    const remaining=OPTIONAL_READBACK_MS-(performance.now()-started);
+    const evidence=await readOptionalSource(()=>deps.contractEvidence(research.market,{enabled:true,selectedTicker:ticker,
+      redditEnabled:false,includeX:false,headlineMode:'full',sports:research.extensions?.sports,
+      settlementSources:research.rules?.settlement_sources}),remaining);
+    if(!evidence)return {...packet,reporting_status:'unavailable'};
+    const matches=[...(evidence?.items||[]),...(evidence?.official_observations||[]),...(evidence?.related_items||[])].filter(row=>row.url&&row.title).slice(0,5);
     const links=(evidence?.source_links||[]).filter(row=>row.url).slice(0,2);
-    return {...packet,evidence:matches.map(row=>({title:String(row.title).slice(0,180),url:row.url,publisher:row.publisher,
-      excerpt:String(row.excerpt||'').slice(0,300),match_scope:row.match_scope})),
+    return {...packet,model_context:evidenceModelContext(evidence,research),evidence:matches.map(row=>({title:String(row.title).slice(0,180),url:row.url,publisher:row.publisher,
+      excerpt:String(row.excerpt||'').slice(0,650),why_relevant:String(row.why_relevant||'').slice(0,350),impact:String(row.impact||'').slice(0,350),
+      match_scope:row.match_scope,published_at:row.published_at,retrieved_at:row.retrieved_at||row.as_of})),
       sources:[...links,...matches.map(row=>({label:row.publisher||'Attributed reporting',url:row.url})),...packet.sources].slice(0,8)};
   });
   register('get_price_history','Read observed exchange candle closes. Gaps are not filled and quote midpoints are labeled.',{ticker,hours:z.enum(['24','168']).default('24')},async({ticker,hours})=>{
@@ -116,7 +148,43 @@ export function createResearchServer({tickerScope,modelScope='baseline',executio
   register('get_source_status','Read public provider availability and warehouse coverage counts. No credentials or private records.',{},async()=>({as_of:new Date().toISOString(),providers:deps.providerStatus(),warehouse:await deps.warehouseStatus()}));
   register('search_retained_evidence','Search only already retained public evidence for the selected ticker using lexical and real local semantic retrieval. Returns bounded source citations. Does not load news/social feeds, index private data, change probabilities or access journals. If empty, the user must explicitly Load contract news.',{ticker,query:z.string().min(3).max(300),limit:z.number().int().min(1).max(8).default(6)},async({ticker,query,limit})=>deps.searchRetainedEvidence(ticker,query,{limit}));
   register('analyze_execution_lab','Compare the selected contract execution schedule, continuous observed order flow, quote-arrival clustering and inventory-risk scenarios using the user-selected lab controls. Missing live sequences remain unavailable. The result cannot change the independent outcome forecast or access accounts. Parameter assumptions and failed validation gates must be preserved.',{ticker},async({ticker})=>executionToolPacket(await deps.workspaceExecutionResearch(ticker,{controls:executionControls,model:modelScope})));
+  if(paperActions&&tickerScope){
+    const descriptions={
+      preview:'Run a bounded hypothetical quant scenario for this guest session and selected contract. Returns a review draft without saving a scenario.',
+      list:'Read saved hypothetical scenarios for this guest session and selected contract.',
+      save:'Save the exact reviewed hypothetical scenario to this guest session after explicit user confirmation.',
+      discard:'Remove a selected saved hypothetical scenario from this guest session after explicit user confirmation.',
+    };
+    for(const [operation,tool] of Object.entries(paperTools)){
+      server.registerTool(tool.name,{description:descriptions[operation],inputSchema:tool.input,
+        annotations:{readOnlyHint:operation==='list',destructiveHint:operation==='discard',idempotentHint:operation!=='preview',openWorldHint:false}},async input=>{
+        if(input.ticker!==tickerScope)return {isError:true,...output({status:404,error:'This action is scoped to the selected contract.'})};
+        try{return output(await paperActions[operation](input));}
+        catch(error){return {isError:true,...output(paperActionError(error))};}
+      });
+    }
+  }
   return server;
+}
+
+export async function localResearchReadback({ticker,model,executionControls,panel,detail,question,signal,dependencies}) {
+  const server=createResearchServer({tickerScope:ticker,modelScope:model,executionScope:executionControls,dependencies});
+  const client=new Client({name:'predictir-research',version:'4.0.0'});
+  const [clientTransport,serverTransport]=InMemoryTransport.createLinkedPair();
+  const deadline=AbortSignal.any([signal,AbortSignal.timeout(18000)]);
+  try{
+    await server.connect(serverTransport);
+    await client.connect(clientTransport,{signal:deadline,timeout:1000});
+    const tools=planResearchReadback(question,{panel,detail});
+    const results=await Promise.allSettled(tools.map(async name=>{
+      const start=performance.now();
+      const result=await client.callTool({name,arguments:azureToolArguments(name,ticker,question,panel)},undefined,{signal:deadline,timeout:17000});
+      return {name,result,duration_ms:Math.round(performance.now()-start)};
+    }));
+    return results.flatMap(result=>result.status==='fulfilled'?[result.value]:[]);
+  }finally{
+    await client.close();
+  }
 }
 export async function localPositionReview(position,{signal,dependencies}={}){
   const input=parsePositionReview(position);

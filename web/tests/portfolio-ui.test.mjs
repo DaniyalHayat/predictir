@@ -1,14 +1,14 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import '../public/dashboard/paper.js';
-import {appearance,DEFAULT_PREFERENCES,THEMES,contrastRatio} from '../ui/preferences.mjs';
+import {appearance,DEFAULT_PREFERENCES,THEMES,contrastRatio} from '../ui/preferences.ts';
 import {attachEntryContext,portfolioTickers,PAPER_STORAGE,PAPER_BALANCE,updateStoredLedger} from '../ui/paper-state.mjs';
 import {acceptPortfolioBook,portfolioTotals} from '../ui/portfolio-state.mjs';
 import {paperCapital} from '../ui/paper-capital.mjs';
-import {mergeResearchRefresh,researchRefreshDelay} from '../ui/research-state.mjs';
-import {initialSelection,selectionReducer,refreshMarketRows} from '../ui/selection.mjs';
+import {mergeResearchRefresh,researchRefreshDelay} from '../ui/research-state.ts';
+import {initialSelection,selectionReducer,refreshMarketRows} from '../ui/selection.ts';
 import {automaticReviewSignal,duePositionReviews,positionReviewInput,REVIEW_INTERVAL_MS} from '../ui/position-review-state.mjs';
-const paper=globalThis.KalshiPaper,now=Date.parse('2026-11-04T17:00:00Z');
+const paper=globalThis.PredictirPaper,now=Date.parse('2026-11-04T17:00:00Z');
 const book={ticker:'KXTEST-YES',as_of:'2026-11-04T16:59:50Z',source_url:'https://api.elections.kalshi.com/trade-api/v2/markets/KXTEST-YES/orderbook',raw:{orderbook_fp:{yes_dollars:[['.35','100']],no_dollars:[['.6','100']]}}};
 const entry=()=>paper.estimate(book,book.ticker,'yes','buy',10,{now});
 const opened=()=>paper.applyOpen(paper.emptyLedger(),entry(),{id:'p',time:'2026-11-04T16:59:55Z'});
@@ -30,6 +30,15 @@ test('sell notifications persist until dismissed and rearm only after a clear si
   assert.equal(automaticReviewSignal('HOLD',first).unread,false);
   assert.equal(automaticReviewSignal('SELL',automaticReviewSignal('HOLD',first)).notify,true);
   assert.equal(automaticReviewSignal('SELL',{paused:true}).notify,false);
+});
+test('cash changes invalidate a pending scan and its replacement budget without changing the lot',()=>{
+  const position=opened().positions[0],positions=[position];
+  const before=positionReviewInput(position,positions,'baseline',{availableCash:20});
+  const after=positionReviewInput(position,positions,'baseline',{availableCash:3});
+  assert.equal(before.available_cash,20);assert.equal(after.available_cash,3);
+  assert.notEqual(JSON.stringify(before),JSON.stringify(after));
+  assert.equal(before.quantity,after.quantity);assert.equal(before.basis,after.basis);
+  assert.equal(positionReviewInput(position,positions,'baseline',{availableCash:NaN}).available_cash,undefined);
 });
 test('all appearance options retain readable body, secondary text and interactive colors',()=>{
   assert.deepEqual(appearance('{broken'),DEFAULT_PREFERENCES);

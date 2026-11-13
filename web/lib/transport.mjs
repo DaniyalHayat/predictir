@@ -1,7 +1,12 @@
 export class DataResponseError extends Error {
-  constructor(message, {status = 502, code = 'DATA_RESPONSE', url = ''} = {}) {
-    super(message); this.name = 'DataResponseError'; this.status = status; this.code = code; this.url = url;
+  constructor(message, {status = 502, code = 'DATA_RESPONSE', url = '', retryAfterMs = 0} = {}) {
+    super(message); this.name = 'DataResponseError'; this.status = status; this.code = code; this.url = url; this.retryAfterMs = retryAfterMs;
   }
+}
+
+export function retryAfterMilliseconds(header,{now=Date.now(),fallback=15000,maximum=300000}={}){
+  const seconds=header?.trim()?Number(header):NaN,wait=Number.isFinite(seconds)?seconds*1000:Date.parse(header||'')-now;
+  return Number.isFinite(wait)?Math.max(1000,Math.min(maximum,wait)):fallback;
 }
 
 export async function readJSON(response, {source = 'Data service', maximumBytes = 12_000_000} = {}) {
@@ -23,15 +28,25 @@ export async function readJSON(response, {source = 'Data service', maximumBytes 
   for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.byteLength; }
   const original = new TextDecoder().decode(bytes),text=original.trim();
   const contentType = response.headers.get('content-type') || '';
+  const retryAfterMs=response.status===429?retryAfterMilliseconds(response.headers.get('retry-after'),{fallback:0,maximum:86400000}):0;
   if (/^\s*</.test(text) || /text\/html/i.test(contentType)) {
+    if(response.status===429){
+      const wait=retryAfterMilliseconds(response.headers.get('retry-after'));
+      throw new DataResponseError(`Site protection paused requests. Try again in ${Math.ceil(wait/1000)} seconds.`,
+        {code:'EDGE_RATE_LIMITED',status:429,url:response.url,retryAfterMs:wait});
+    }
     throw new DataResponseError(`${source} returned a web page instead of JSON. Check the API address or try again shortly.`,
       {code: 'HTML_INSTEAD_OF_JSON', status: response.ok ? 502 : response.status, url: response.url});
   }
   let data;
   try { data = JSON.parse(text); }
-  catch { throw new DataResponseError(`${source} returned an unreadable data response`, {code: 'INVALID_JSON', url: response.url}); }
+  catch {
+    if(response.status===429)throw new DataResponseError(`${source} is rate limited`,{
+      status:429,code:'HTTP_ERROR',url:response.url,retryAfterMs});
+    throw new DataResponseError(`${source} returned an unreadable data response`, {code: 'INVALID_JSON', url: response.url});
+  }
   if (!response.ok) throw new DataResponseError(typeof data?.error === 'string' ? data.error : `${source} HTTP ${response.status}`,
-    {status: response.status, code: 'HTTP_ERROR', url: response.url});
+    {status: response.status, code: 'HTTP_ERROR', url: response.url, retryAfterMs});
   if (data === null || typeof data !== 'object') throw new DataResponseError(`${source} returned an unexpected data shape`, {code: 'INVALID_SCHEMA'});
   return {data, raw: original};
 }

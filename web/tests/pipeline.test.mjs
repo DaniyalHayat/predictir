@@ -82,6 +82,29 @@ test('durable pipeline PostgreSQL queue behavior',{skip:!url,timeout:30000},asyn
       const successor=randomUUID(),stale=await runPipelineJob(s,{stale_error:async()=>{await store.db.query(`UPDATE ${table} SET owner=$1,locked_until=now()+interval '5 minutes' WHERE key='stale-error'`,[successor]);throw Object.assign(new Error('late failure'),{code:'STALE_ERROR'});}});
       assert.equal(stale.status,'lease_lost');
       const preserved=(await store.db.query(`SELECT state,owner,error_code FROM ${table} WHERE key='stale-error'`)).rows[0];assert.equal(preserved.state,'running');assert.equal(preserved.owner,successor);assert.equal(preserved.error_code,null);
+      await store.db.query(`TRUNCATE ${table}`);
+    });
+    await t.test('expired final attempts become terminal without disrupting other claims',async()=>{
+      await store.db.query(`INSERT INTO ${table}(key,kind,attempts) VALUES('exhausted','expires',3)`);
+      const expired=await runPipelineJob(s,{expires:async()=>{
+        await store.db.query(`UPDATE ${table} SET locked_until=now()-interval '1 second' WHERE key='exhausted'`);
+      }});
+      assert.equal(expired.status,'lease_lost');
+
+      const activeOwner=randomUUID();
+      await store.db.query(`INSERT INTO ${table}(key,kind,state,attempts,owner,locked_until)
+        VALUES('active','expires','running',4,$1,now()+interval '5 minutes')`,[activeOwner]);
+      await store.db.query(`INSERT INTO ${table}(key,kind) VALUES('next','healthy')`);
+      assert.deepEqual(await runPipelineJob(s,{healthy:async()=>{}}),{kind:'healthy',status:'complete'});
+
+      const state=(await store.db.query(`SELECT state,attempts,finished_at,locked_until,error_code FROM ${table} WHERE key='exhausted'`)).rows[0];
+      assert.equal(state.state,'failed');
+      assert.equal(state.attempts,4);
+      assert.ok(state.finished_at);
+      assert.equal(state.locked_until,null);
+      assert.equal(state.error_code,'JOB_LEASE_EXPIRED');
+      assert.equal(await runPipelineJob(s),null);
+      assert.deepEqual((await store.db.query(`SELECT state,owner FROM ${table} WHERE key='active'`)).rows[0],{state:'running',owner:activeOwner});
     });
   }finally{await store.db.query(`DROP TABLE IF EXISTS ${table}`);await store.close();}
 });

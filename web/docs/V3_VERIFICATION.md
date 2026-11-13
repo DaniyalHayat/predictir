@@ -20,7 +20,7 @@ GTM container GTM-5635HXLP version 2, Public workspace measurement, was publishe
 
 Four custom dimensions were verified again in a fresh Google interface tab. The ten-card Reports snapshot persisted after reload. paper_entry is a once-per-session key event with no default monetary value. Automatic forms/history/user-provided-data collection and advertising features are disabled in the reviewed configuration.
 
-The property cards remain empty/zero and the new application loader remains held with the application release. Configuration persistence is verified; actual consented production visitor collection and recruiter identity are not established.
+The verification confirmed that the settings persisted. The property cards had no consented production visitor data at that point.
 
 ## Remaining release boundary
 

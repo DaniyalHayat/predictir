@@ -84,9 +84,14 @@ export async function leagueData(league) {
   const job=(async()=>{
     const config=leagues[league];if(!config)throw new RangeError('Only NBA and Premier League match models are supported');
     const response=await sourceJSON('ESPN '+config.name,base+config.path+'/teams?limit=100',{ttl:86400});
-    const teams=(response.data.sports?.[0]?.leagues?.[0]?.teams||[]).map(({team:t})=>({id:String(t.id),name:t.displayName,
+    const teams=(response.data.sports?.[0]?.leagues?.[0]?.teams||[]).map(({team:t})=>({id:String(t.id),name:t.displayName,code:t.abbreviation,
       aliases:[t.displayName,t.name,t.location,t.shortDisplayName,t.abbreviation,t.nickname].filter(Boolean).map(clean)}));
     if(teams.length<15||teams.length>40)throw new Error('Team-catalog coverage is incomplete');
+    if(league==='epl')for(const team of teams){
+      const first=clean(team.name).split(' ')[0];
+      if(first.length>=4&&teams.filter(other=>clean(other.name).startsWith(first+' ')||clean(other.name)===first).length===1)
+        team.aliases=[...new Set([...team.aliases,first])];
+    }
     const now=new Date(),year=league==='nba'?now.getUTCFullYear()+(now.getUTCMonth()>=6?1:0):now.getUTCFullYear()-(now.getUTCMonth()<6?1:0);
     const tasks=teams.flatMap(t=>[year-2,year-1,year].map(season=>({team:t.id,season}))),errors=[];
     const schedules=await boundedMap(tasks,3,async task=>{
@@ -114,14 +119,33 @@ export function sportsContractDate(market){
   const code=(market.event_ticker||market.ticker||'').match(/^KX(?:NBAGAME|EPLGAME)-(\d{2}(?:JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|OCT|NOV|DEC)\d{2})[A-Z0-9]*(?:-|$)/);
   return code?eventDate({event_ticker:'EVENT-'+code[1]}):null;
 }
+const equivalentCodes={nba:{GS:['GSW'],NO:['NOP'],NY:['NYK'],SA:['SAS'],UTAH:['UTA'],WSH:['WAS']},epl:{BHA:['BRI'],MNC:['MCI'],MAN:['MUN']}};
+function tickerTeams(market,data){
+  const match=/^KX(?:NBAGAME|EPLGAME)-\d{2}[A-Z]{3}\d{2}([A-Z]{4,8})-([A-Z]{2,4})$/.exec(market.ticker||'');
+  if(!match)return null;
+  const codes=team=>[team.code,...(equivalentCodes[data.league]?.[team.code]||[])].filter(value=>typeof value==='string'&&/^[A-Z]{2,4}$/.test(value));
+  const pairs=data.teams.flatMap(a=>codes(a).flatMap(code=>match[1].startsWith(code)?
+    data.teams.filter(b=>b.id!==a.id&&codes(b).includes(match[1].slice(code.length))).map(b=>[a,b]):[]));
+  const unique=[...new Map(pairs.map(pair=>[pair.map(t=>t.id).sort().join('#'),pair])).values()];
+  if(unique.length!==1)return null;
+  const pair=unique[0],selected=pair.filter(team=>codes(team).includes(match[2]));
+  return {teams:pair,outcome:match[2]==='TIE'||match[2]==='DRAW'?'draw':selected.length===1?selected[0].id:null};
+}
+function outcomeMatches(team,outcome){
+  const full=clean(team.name).replace(/^la /,'los angeles ');
+  const words=full.split(' '),initial=words.length>1?words.slice(0,-1).join(' ')+' '+words.at(-1)[0]:null;
+  return team.aliases.some(alias=>mentions(outcome,alias))||outcome.length>=4&&full.startsWith(outcome+' ')||outcome===full||outcome===initial;
+}
 export function matchGame(market,data) {
   const date=sportsContractDate(market),text=clean(market.rules_primary+' '+market.title),outcome=clean(market.yes_sub_title||market.title.replace(/ wins$/i,''));
   if(!date)return {reason:'The contract has no unambiguous scheduled date.'};
-  const teams=data.teams.filter(t=>t.aliases.some(alias=>mentions(text,alias)));
+  const identity=tickerTeams(market,data),teams=identity?.teams||data.teams.filter(t=>t.aliases.some(alias=>mentions(text,alias)));
   const ids=new Set(teams.map(t=>t.id));
   const matches=[...data.scheduled,...data.games].filter(g=>ids.has(g.home_id)&&ids.has(g.away_id)&&scheduledDay(g.played_at,data.league)===date);
   if(matches.length!==1)return {reason:'An exact two-team event and scheduled-date match was not established.'};
-  const game=matches[0],draw=/^(tie|draw)( is the result)?$/.test(outcome),team=teams.filter(t=>[game.home_id,game.away_id].includes(t.id)&&t.aliases.some(a=>mentions(outcome,a)));
+  const game=matches[0],draw=/^(tie|draw)( is the result)?$/.test(outcome),labels=teams.filter(t=>[game.home_id,game.away_id].includes(t.id)&&outcomeMatches(t,outcome));
+  const team=labels.length===1?labels.filter(t=>!identity||identity.outcome===t.id):[];
+  if(identity&&(draw?identity.outcome!=='draw':identity.outcome==='draw'))return {game,reason:'The ticker outcome and YES label do not match.'};
   if(!draw&&team.length!==1)return {game,reason:'The YES outcome could not be matched to exactly one team.'};
   if(draw&&data.league==='nba')return {game,reason:'A basketball draw is not supported.'};
   return {game,side:draw?'draw':team[0].id===game.home_id?'home':'away'};
@@ -214,7 +238,7 @@ export async function sportsResearch(market,{includeAvailability=true,refreshAva
   const availability_feedback=availabilityFor(p,interval);
   const alternativeRange=alternative?(match.side==='home'?alternative.interval:[1-alternative.interval[1],1-alternative.interval[0]]):null;
   const references=[game.home_id,game.away_id].map(id=>data.sources.filter(s=>s.url.includes('/teams/'+id+'/schedule?')).sort((a,b)=>b.url.localeCompare(a.url))[0]).filter(Boolean);
-  return {league,event:game,teams:[{id:game.home_id,name:game.home_name},{id:game.away_id,name:game.away_name}].map(team=>({...team,form:teamForm(prior,team.id,cutoff),form_last_five:teamForm(prior,team.id,cutoff,5),last_five_games:prior.filter(g=>g.home_id===team.id||g.away_id===team.id).slice(-5).reverse()})),head_to_head:paired,availability:includeAvailability?injuries?.rows||[]:[],availability_note:injuries?.note,
+  return {league,event:game,teams:[{id:game.home_id,name:game.home_name},{id:game.away_id,name:game.away_name}].map(team=>({...team,aliases:data.teams.find(row=>row.id===team.id)?.aliases||[],form:teamForm(prior,team.id,cutoff),form_last_five:teamForm(prior,team.id,cutoff,5),last_five_games:prior.filter(g=>g.home_id===team.id||g.away_id===team.id).slice(-5).reverse()})),head_to_head:paired,availability:includeAvailability?injuries?.rows||[]:[],availability_note:injuries?.note,
     player_stats:includeAvailability?injuries?.player_stats||[]:[],lineup_scenarios:includeAvailability?injuries?.lineup_scenarios||[]:[],boxscore_coverage:injuries?.boxscore_coverage||null,availability_feedback,
     coverage:data.coverage,as_of:data.as_of,reason:match.reason||null,bookmaker:game.bookmaker,
     live_score:live?.score||null,

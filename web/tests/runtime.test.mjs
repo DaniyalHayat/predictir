@@ -5,6 +5,8 @@ import {generateKeyPairSync} from 'node:crypto';
 import {BookReplica,MarketFeed} from '../lib/cloud/feed.mjs';
 import {parseTraceparent,traceContext,validTracestate,structuredLog} from '../lib/runtime-observability.mjs';
 import {createMarketServer} from '../cloud/server.mjs';
+import {createRuntimeTelemetry} from '../lib/runtime/telemetry.mjs';
+import {createDatabaseReadiness} from '../lib/runtime/database-readiness.mjs';
 
 const edgeSecret='test-runtime-edge-'.repeat(4),headers={'x-market-edge-secret':edgeSecret,'x-market-country':'US','x-market-client-ip':'198.51.100.30'};
 async function server(t,options={}){
@@ -35,6 +37,41 @@ test('the Railway API host still sends browser visitors to Predictir',async t=>{
   const response=await fetch(url+'/dashboard/index.html',{redirect:'manual'});
   assert.equal(response.status,302);
   assert.equal(response.headers.get('location'),'https://predictir.dev/');
+});
+test('readiness checks the database once per interval and recovers without restarting liveness',async t=>{
+  const events=[];
+  const replies=[Promise.reject(new Error('private connection details')),Promise.resolve()];
+  replies[0].catch(()=>{});
+  let calls=0;
+  const check=createDatabaseReadiness({query:()=>replies[calls++],cacheMs:10,report:row=>events.push(row)});
+  const start=Promise.all([check(),check()]);
+  assert.deepEqual(await start,[503,503]);
+  assert.equal(await check(),503);
+  assert.equal(calls,1);
+  await new Promise(resolve=>setTimeout(resolve,12));
+  assert.equal(await check(),200);
+  assert.deepEqual(events.map(row=>row.status),[503,200]);
+  assert.ok(!JSON.stringify(events).includes('private'));
+
+  const url=await server(t,{databaseReadinessEnabled:true,storage:()=>({db:{query:async query=>{
+    assert.equal(query.text,'SELECT 1');
+    throw new Error('private connection details');
+  }}})});
+  const ready=await fetch(url+'/readyz');
+  assert.equal(ready.status,503);
+  assert.deepEqual(await ready.json(),{status:'unavailable'});
+  assert.equal((await fetch(url+'/healthz')).status,200);
+});
+test('slow readiness queries time out without piling up database work',async()=>{
+  const query=Promise.withResolvers();
+  let calls=0;
+  const check=createDatabaseReadiness({query:()=>{calls++;return query.promise;},cacheMs:0,timeoutMs:8,report:()=>{}});
+  assert.equal(await check(),503);
+  assert.equal(await check(),503);
+  assert.equal(calls,1);
+  query.resolve();
+  await new Promise(resolve=>setImmediate(resolve));
+  assert.equal(await check(),200);
 });
 test('trace context rejects invalid IDs and trust-boundary state, while correlating verified hops',()=>{
   const input='00-'+'a'.repeat(32)+'-'+'b'.repeat(16)+'-01';
@@ -81,11 +118,15 @@ test('broadcast snapshots bound materialization without losing indexed reconstru
 test('multiplex SSE emits named latest-book events and cleans every subscription',async t=>{
   const listeners=new Map();let removed=0;
   const feed={status:'connected',add:async(ticker,fn)=>{listeners.set(ticker,fn);fn({kind:'connection',status:'connected'});for(let i=0;i<10;i++)fn({kind:'quote',ticker,sequence:i,as_of:new Date().toISOString(),raw:{orderbook_fp:{yes_dollars:[['.4',String(i+1)]],no_dollars:[['.55','10']]}}});return()=>{listeners.delete(ticker);removed++;};}};
-  const url=await server(t,{feed}),response=await fetch(url+'/api/portfolio/stream?tickers=TEST-A,TEST-B',{headers,signal:AbortSignal.timeout(3000)});
+  const telemetry=createRuntimeTelemetry({routes:['/api/portfolio/stream']});
+  const url=await server(t,{feed,telemetry}),response=await fetch(url+'/api/portfolio/stream?tickers=TEST-A,TEST-B',{headers,signal:AbortSignal.timeout(3000)});
   assert.equal(response.status,200);const reader=response.body.getReader();let text='';
   while((text.match(/event: book/g)||[]).length<2){const value=await reader.read();text+=new TextDecoder().decode(value.value);}
   assert.equal((text.match(/event: book/g)||[]).length,2);assert.ok(text.includes('"sequence":9'));assert.ok(text.includes('event: status'));await reader.cancel();
   await new Promise(resolve=>setTimeout(resolve,30));assert.equal(listeners.size,0);assert.equal(removed,2);
+  const {distributions}=telemetry.snapshot();
+  assert.equal(distributions['stream:/api/portfolio/stream'].count,1);
+  assert.equal(distributions['request:/api/portfolio/stream'],undefined);
 });
 test('abandoned portfolio stream admissions release capacity while their quotas are pending',async t=>{
   const admission=Promise.withResolvers(),entered=Promise.withResolvers(),disconnected=Promise.withResolvers();
@@ -116,6 +157,24 @@ test('abandoned portfolio stream admissions release capacity while their quotas 
   assert.equal(subscriptions,1);
   assert.equal(charged.filter(key=>key.startsWith('stream-minutes#')).length,1);
   assert.equal(charged.filter(key=>key.startsWith('stream-egress')).length,1);
+});
+test('several browser tabs share streaming capacity while excess connections receive bounded retry guidance',async t=>{
+  const active=new Set(),responses=[];
+  const feed={status:'connected',add:async(_ticker,listener)=>{active.add(listener);listener({kind:'connection',status:'connected'});return()=>active.delete(listener);}};
+  const url=await server(t,{feed});
+  try{
+    for(let i=0;i<8;i++){
+      const response=await fetch(url+'/api/stream?ticker=TEST-A',{headers,signal:AbortSignal.timeout(5000)});
+      assert.equal(response.status,200);responses.push(response);
+    }
+    const excess=await fetch(url+'/api/stream?ticker=TEST-A',{headers});
+    assert.equal(excess.status,429);assert.equal(excess.headers.get('retry-after'),'15');
+    assert.equal(active.size,8);
+    await responses.pop().body.cancel();
+    await new Promise(resolve=>setTimeout(resolve,30));
+    const replacement=await fetch(url+'/api/stream?ticker=TEST-A',{headers,signal:AbortSignal.timeout(5000)});
+    assert.equal(replacement.status,200);responses.push(replacement);
+  }finally{await Promise.all(responses.map(response=>response.body.cancel()));}
 });
 test('portfolio admission bounds ticker lists, charges bytes once and preserves trace correlation',async t=>{
   const takes=[],logs=[];const storage={consume:async(key,limit,amount)=>{takes.push({key,limit,amount});return !key.startsWith('stream-egress');}};

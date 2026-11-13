@@ -2,6 +2,7 @@ import {book,marketDetails,trades,validateTicker} from '../live.mjs';
 import {contractHistory,recentPositionIdeas,workspaceEvidence,workspaceResearch} from './router.mjs';
 import {evaluatePaperPosition} from './positions.mjs';
 import {WORKSPACE_CATEGORIES} from './catalog.mjs';
+import {measurementEvidenceMatch} from './source-ranking.mjs';
 
 export const POSITION_REVIEW_BUDGET_MS=6200;
 const sourceTasks=new Map(),maxConcurrentReviews=4;
@@ -12,13 +13,15 @@ const percent=value=>Math.round(value*1000)/10+'%';
 
 export function parsePositionReview(input){
   if(!input||typeof input!=='object'||Array.isArray(input))throw new RangeError('Supply one open paper position.');
-  const {ticker,side,quantity,basis,shared_quantity=quantity,model='validated',automatic=false}=input;
+  const {ticker,side,quantity,basis,shared_quantity=quantity,model='validated',automatic=false,available_cash,alternative_budget=20}=input;
   validateTicker(ticker);
   if(!['yes','no'].includes(side)||!['baseline','validated','challenger'].includes(model)||typeof automatic!=='boolean'||
     !Number.isFinite(quantity)||quantity<=0||quantity>1e6||!Number.isFinite(basis)||basis<0||basis>1e9||
-    !Number.isFinite(shared_quantity)||shared_quantity<quantity||shared_quantity>1e6)
+    !Number.isFinite(shared_quantity)||shared_quantity<quantity||shared_quantity>1e6||
+    available_cash!==undefined&&(!Number.isFinite(available_cash)||available_cash<0||available_cash>1e9)||
+    !Number.isFinite(alternative_budget)||alternative_budget<=0||alternative_budget>10000)
     throw new RangeError('Use a valid side, quantity, shared quantity, cost basis and research model.');
-  return {ticker,side,quantity,basis,shared_quantity,model,automatic};
+  return {ticker,side,quantity,basis,shared_quantity,model,automatic,alternative_budget,...(available_cash!==undefined?{available_cash}:{})};
 }
 
 function collectPositionSources(ticker,model,deps){
@@ -89,7 +92,7 @@ function links(rows){
   return [...unique.values()].slice(0,8);
 }
 
-function decisionSections(input,{evaluation,action,book,history,flow,news,feedback,reason,now}){
+function decisionSections(input,{evaluation,action,book,history,flow,news,market,feedback,reason,now}){
   const p=evaluation,sections=[];
   const label=input.side.toUpperCase();
   if(p.settlement.confirmed){
@@ -133,7 +136,7 @@ function decisionSections(input,{evaluation,action,book,history,flow,news,feedba
   sections.push({heading:'Price movement and order flow',text:quoteText+flowText+(changes?
     'The one-minute quote model projects '+(move===0?'no midpoint change':counts.format(Math.abs(move))+'¢ '+(move>0?'higher':'lower'))+' in the YES midpoint. This measures possible quote movement and cannot tell you who wins at settlement.':
     'Recent quote history did not support a current price-path estimate.')});
-  const reports=[...(news?.items||[]),...(news?.related_items||[])].filter(row=>row.title&&row.url).slice(0,3);
+  const reports=[...(news?.items||[]),...(news?.related_items||[])].filter(row=>row.title&&row.url&&measurementEvidenceMatch(market||{ticker:input.ticker},row.title,row.excerpt,row.publisher_url||row.url).accepted).slice(0,3);
   sections.push({heading:'Reporting and the next thing to watch',text:reports.length?
     reports.map(row=>String(row.publisher||'Public source').slice(0,70)+': '+String(row.title).slice(0,175)).join(' • ')+
       ' Read the source dates and check whether the report changes the exact settlement condition or the independent forecast. Related reporting is context.':
@@ -169,15 +172,17 @@ export async function reviewPaperPosition(raw,{signal,deadlineMs=POSITION_REVIEW
   if(!packet)reason='All scan slots are busy. Try again shortly.';
   const flow=summarizePositionFlow(tradeInfo,input.ticker,at);
   const feedback=model?.forecast?.availability_feedback;
-  const {sections,reports}=decisionSections(input,{evaluation,action,book:bookInfo,history,flow,news,feedback,reason,now:at});
+  const {sections,reports}=decisionSections(input,{evaluation,action,book:bookInfo,history,flow,news,market,feedback,reason,now:at});
   const sources=links([{label:'Kalshi settlement rules',url:marketInfo?.source_url,retrieved_at:marketInfo?.as_of},
     {label:'Kalshi bid depth',url:bookInfo?.source_url,retrieved_at:bookInfo?.as_of},
     {label:'Kalshi public trades',url:tradeInfo?.source_url,retrieved_at:tradeInfo?.as_of},
     {label:'Kalshi price history',url:history?.source_url,retrieved_at:history?.as_of},
     ...reports.map(row=>({label:row.publisher,url:row.url,retrieved_at:row.retrieved_at})),...(model?.sources||[])]);
   let ideas;
-  if(action==='SELL'){
-    const ideaTask=Promise.resolve().then(deps.recentPositionIdeas).then(value=>{ideas=value;});
+  const availableAfterExit=input.available_cash===undefined?null:input.available_cash+Math.max(0,evaluation.marked_value||0);
+  const alternativeBudget=Math.min(input.alternative_budget,availableAfterExit??input.alternative_budget);
+  if(action==='SELL'&&alternativeBudget>0){
+    const ideaTask=Promise.resolve().then(()=>deps.recentPositionIdeas({budget:alternativeBudget})).then(value=>{ideas=value;});
     await before(ideaTask,Math.min(1000,deadlineMs-(performance.now()-start)),signal);
   }
   const alternatives=(ideas?.rows||[]).filter(row=>row.ticker!==input.ticker&&(!market?.event_ticker||row.event_ticker!==market.event_ticker)).slice(0,3);
@@ -189,5 +194,8 @@ export async function reviewPaperPosition(raw,{signal,deadlineMs=POSITION_REVIEW
     partial:!completed||Object.values(results).some(row=>row.error),source_status:Object.fromEntries(sourceNames.map(key=>
       [key,results[key]?.limited?'rate_limited':results[key]?.error?'unavailable':results[key]?'loaded':'pending'])),
     alternative_coverage:{checked_categories:ideas?.checked_categories||[],category_count:WORKSPACE_CATEGORIES.length,scanned_contracts:ideas?.scanned_contracts||0,
-      scope:action==='SELL'?'Up to three recent, validated $20 paper scenarios ranked by lower-bound value after fees and buffer. The sample can miss contracts or categories.':'Alternative ideas are checked after a supported sell signal.'}};
+      budget:alternativeBudget,available_after_exit:availableAfterExit,budget_source:availableAfterExit===null?'scenario_limit':'available_cash_and_net_exit',
+      scope:action==='SELL'?'Up to three recent, validated alternatives, each using at most '+usd(alternativeBudget)+' including modeled fees. '+
+        (availableAfterExit===null?'Available paper cash was not supplied; confirm it before buying. ':'The budget is capped by your supplied paper cash plus this lot’s net exit value. ')+
+        'These are separate alternatives, not three simultaneous allocations. The sample can miss contracts or categories.':'Alternative ideas are checked after a supported sell signal.'}};
 }

@@ -2,36 +2,44 @@
 import {memo,useCallback,useEffect,useMemo,useReducer,useRef,useState} from 'react';
 import dynamic from 'next/dynamic';
 import {Activity,ArrowLeft,ArrowUpRight,Bitcoin,BookOpen,Check,ChevronDown,CloudSun,Database,ExternalLink,FlaskConical,
-  Leaf,Loader2,MessageSquare,Music2,Plane,RefreshCw,Search,Trophy,Landmark,X,Palette,ChartNoAxesCombined,Wallet,LayoutDashboard,FileText,UserRound,Bookmark} from 'lucide-react';
-import {api,API_BASE,cents,count,dollars,percent,dateLabel} from './api.mjs';
-import {initialSelection,selectionReducer,contractTitle,refreshMarketRows} from './selection.mjs';
-import Chart from './Chart.jsx';
-import Modal from './Modal.jsx';
+  Leaf,Loader2,MessageSquare,Music2,Plane,RefreshCw,Search,Trophy,Landmark,X,Palette,ChartNoAxesCombined,Wallet,LayoutDashboard,UserRound,Bookmark} from 'lucide-react';
+import {api,openEventStream,cents,count,dollars,percent,dateLabel} from './api.mjs';
+import {initialSelection,selectionReducer,contractTitle,refreshMarketRows} from './selection';
+import QuoteComparison from './QuoteComparison';
+import Modal from './Modal';
 import useOpinions from './useOpinions.jsx';
 import Appearance from './Appearance.jsx';
-import {appearance,DEFAULT_PREFERENCES,PREFERENCE_KEY} from './preferences.mjs';
-import {mergeResearchRefresh,researchRefreshDelay} from './research-state.mjs';
-import {researchScreenOpinion,screenFreshness} from './screen-freshness.mjs';
+import {appearance,DEFAULT_PREFERENCES,PREFERENCE_KEY} from './preferences';
+import {migratePredictirStorage} from './storage-migration.mjs';
+import {mergeResearchRefresh,researchRefreshDelay} from './research-state';
+import {researchScreenOpinion,screenFreshness} from './screen-freshness';
 import ContractNews,{ReadMode,ReadText} from './ContractNews.jsx';
 import useAccount,{toggleSavedMarket} from './useAccount.jsx';
-import {CONTRACT_TABS,moveContractTab} from './contract-tabs.mjs';
+import {CONTRACT_TABS,moveContractTab} from './contract-tabs';
+import {assistantContext} from '../lib/workspace/assistant-context.mjs';
 import usePaperLedger from './usePaperLedger.jsx';
 import usePositionReviews from './usePositionReviews.jsx';
+import './workspace.css';
 import './execution-lab.css';
 import './position-review.css';
+const Chart=dynamic(()=>import('./Chart'),{loading:()=> <div className="chart" role="status"><div className="chart-empty">Loading price history…</div></div>});
 const Portfolio=dynamic(()=>import('./Portfolio.jsx'),{loading:()=> <div className="workspace-empty" role="status">Loading portfolio…</div>});
 const Recommendations=dynamic(()=>import('./Recommendations.jsx'),{loading:()=> <div className="workspace-empty" role="status">Loading research screen…</div>});
 const ExecutionLab=dynamic(()=>import('./ExecutionLab.jsx'),{loading:()=> <div className="workspace-empty" role="status">Loading execution lab…</div>});
 const Paper=dynamic(()=>import('./Paper.jsx'));
 const Journal=dynamic(()=>import('./Journal.jsx'));
-const Assistant=dynamic(()=>import('./Assistant.jsx'),{loading:()=> <aside className="assistant-panel" role="status">Opening the research assistant…</aside>});
+const Assistant=dynamic(()=>import('./Assistant'),{loading:()=> <aside className="assistant-panel" role="status"><div className="assistant-heading"><Loader2 size={16} className="spin"/> Opening Ask Why…</div></aside>});
 const Account=dynamic(()=>import('./Account.jsx'));
 const marketPageSize=48;
+const autoSelectionDelayMs=400;
 const noPositions=[];
 
 const categories=[['sports','Sports',Trophy],['macro','Economy',Landmark],['crypto','Crypto',Bitcoin],['travel','Travel',Plane],
   ['weather','Weather',CloudSun],['science','Tech & science',FlaskConical],['climate','Climate',Leaf],['culture','Culture',Music2]];
 const safeURL=value=>{try{const url=new URL(value);return url.protocol==='https:'&&!url.username&&!url.password?url.href:null;}catch{return null;}};
+function AskWhy({panel,onAsk,label}){
+  return <button type="button" className="text-button" onClick={()=>onAsk(panel)} aria-label={'Ask why about '+label}>Ask why <ArrowUpRight size={14}/></button>;
+}
 
 const MarketRow=memo(function MarketRow({row,selected,opinion,onSelect,onResearch,livePrices}) {
   const side=opinion?.side;
@@ -65,6 +73,27 @@ function PricePath({signal,now}){
         <details><summary>How this was tested</summary><p>{signal.scope} Coverage on the replay segment was {percent(signal.replay.residual_range_coverage)}. The modeled quantity is the quote midpoint.</p></details></>:<p>{signal.scope} A holdout needs more observations.</p>}</>:
       <p className="muted">{signal.reason||'Waiting for a recent candle before showing the next-minute estimate.'}</p>}</section>;
 }
+function ResearchReading({value,evidence,long,stale}){
+  const forecast=value.forecast,validation=forecast?.validation,coverage=value.extensions?.sports?.coverage;
+  const analysis=long?(value.analysis?.long_read||evidence?.long_read||value.evidence?.long_read):(value.analysis?.summary||evidence?.summary||value.evidence?.summary);
+  if(analysis)return <div className="reading-copy"><ReadText value={analysis}/></div>;
+  const reason=stale?'The inputs are being refreshed. Recheck the current research before relying on the displayed figures.':
+    value.decision?.reasons?.[0]||forecast?.reason||value.opinion?.reason;
+  const otherReasons=[...new Set(value.decision?.reasons||[])].filter(row=>row!==reason).slice(0,4);
+  const qualified=Number.isFinite(forecast?.probability)&&!stale;
+  return <section className="reading-copy" aria-label="Analysis explanation">
+    <h4>{long?'How to read the result':'What drove this view'}</h4>
+    {reason&&<p>{reason}</p>}
+    {qualified&&<p>{forecast.model_name||'The independent model'} estimates the contract outcome. Paper entry also depends on the quoted price, fees and the available depth.</p>}
+    {long&&<>{otherReasons.map(row=><p key={row}>{row}</p>)}
+      {value.model_selection?.reason&&<p>{value.model_selection.reason}</p>}
+      {validation?.reason&&validation.reason!==reason&&!otherReasons.includes(validation.reason)&&<p>{validation.reason}</p>}
+      {coverage?.partial&&<p>{Number.isFinite(coverage.schedules_expected)&&Number.isFinite(coverage.schedules_returned)?`The source returned ${count(coverage.schedules_returned)} of ${count(coverage.schedules_expected)} requested schedules.`:'Schedule coverage is incomplete.'} Missing games stay out of the matchup history.</p>}
+      {value.decision?.validation_note&&<p>{value.decision.validation_note}</p>}
+      <p>Compare the settlement rule and its named source with the inputs to the estimate. Quoted depth can change before a hypothetical fill.</p>
+    </>}
+  </section>;
+}
 function Research({value,loading,onAssistant,onPaper,onModelEvidence,history,now,compact=false}) {
   const [readMode,setReadMode]=useState('summary'),[loadedEvidence,setLoadedEvidence]=useState(null);
   const receiveEvidence=useCallback((result,refreshed)=>{
@@ -86,7 +115,7 @@ function Research({value,loading,onAssistant,onPaper,onModelEvidence,history,now
     {!stale&&Number.isFinite(forecast?.probability)&&<div className="model-numbers"><div><small>{forecast.outcomes?'YES team win chance':lineup?'Baseline P(YES)':forecast.evidence?.tier===1?'Scenario P(YES)':'Independent P(YES)'}</small><strong>{percent(forecast.probability)}</strong></div><div><small>{forecast.outcomes?'Tie chance':lineup?'Decision range':forecast.evidence?.tier===1?'Sensitivity range':'Model range'}</small><strong>{forecast.outcomes?percent(forecast.outcomes.tie):forecast.interval?.map(percent).join(' – ')||'Unavailable'}</strong></div><div><small>{forecast.outcomes?'Expected YES payout':'Evidence'}</small><strong>{forecast.outcomes?cents(forecast.expected_settlement_value):forecast.evidence?.label||'Research scenario'}</strong></div></div>}
     {!stale&&lineup&&<p><strong>Lineup check.</strong> {lineup.name} is listed {lineup.status.toLowerCase()}. Stress-testing the absence gives {percent(lineup.conditional_probability)} YES. The paper screen checks the decision range against costs. {availabilityLink&&<a href={availabilityLink} target="_blank" rel="noreferrer">See the game report</a>}</p>}
     {!stale&&replayLink&&<p className="footnote"><a href={replayLink} target="_blank" rel="noreferrer">View settled-contract backtest</a></p>}
-    <small className="screen-stamp">Checked {dateLabel(value.as_of)}</small><button className="text-button" onClick={onAssistant}>Ask why <ArrowUpRight size={14}/></button></div>;
+    <small className="screen-stamp">Checked {dateLabel(value.as_of)}</small><button className="text-button" onClick={()=>onAssistant('analysis',{detail:readMode==='long'?'full':'brief'})} aria-label="Ask why about this analysis">Ask why <ArrowUpRight size={14}/></button></div>;
   const paper=setups.length>0&&<section className="method"><div className="section-title"><h3>Trade a $20 paper scenario</h3><small>Fees and visible depth included</small></div><div className="scenario-comparison">{setups.map(row=><div key={row.side}><small>{row.side} · {count(row.contracts)} contracts</small><strong>{cents(row.break_even)} all-in per contract</strong><span>{dollars(row.cost)} entry · {dollars(row.win_value)} balance at full payout</span>
     <span>{Number.isFinite(row.expected_profit)?`${dollars(row.expected_profit)} model expected P/L`:Number.isFinite(row.required_edge)?`Needs ${cents(row.required_edge)} above the quote midpoint to break even`:'A two-sided quote is needed to compare the midpoint.'}</span>
     {Number.isFinite(row.tie_value)&&<span>{dollars(row.tie_value)} balance on a tie</span>}<button className="text-button" onClick={()=>onPaper(row)}>{row.scenario_eligible?'Try':'Compare'} {row.side} in Paper <ArrowUpRight size={14}/></button></div>)}</div></section>;
@@ -95,12 +124,12 @@ function Research({value,loading,onAssistant,onPaper,onModelEvidence,history,now
   const diagnostic=value.settlement_diagnostic;
   return <div className="research-content"><div className="readout-heading"><div><span className="eyebrow">Contract analysis</span><h3>The research brief</h3></div><ReadMode value={readMode} onChange={setReadMode} label="Contract analysis reading length"/></div>{opinion}
     {paper}{path}{!stale&&diagnostic?.available&&<details className="method"><summary>Settlement calibration experiment · {percent(diagnostic.probability)} YES</summary><p>Uses the exchange midpoint as its input. On {diagnostic.validation.overall.n} held-out events, the calibrated model scored {diagnostic.validation.overall.challenger_brier.toFixed(4)} Brier versus {diagnostic.validation.overall.midpoint_brier.toFixed(4)} for the midpoint. Lower is better. This estimate stays out of paper sizing.</p><p>{diagnostic.category_coverage.holdout_n} held-out events in this category. <a href={diagnostic.validation_url} target="_blank" rel="noreferrer">View validation data</a></p></details>}
-    <div className="reading-copy"><ReadText value={readMode==='long'?(value.analysis?.long_read||loadedEvidence?.long_read||value.evidence?.long_read):(value.analysis?.summary||loadedEvidence?.summary||value.evidence?.summary)}/></div>
+    <ResearchReading value={value} evidence={loadedEvidence} long={readMode==='long'} stale={stale}/>
     <div className="section-title"><h3>What matters here</h3></div><div className="driver-list">{value.drivers?.slice(0,readMode==='long'?12:3).map(driver=><div key={driver.name}><Check size={15}/><div><strong>{driver.name}</strong><p>{driver.detail}</p></div></div>)}</div>
     {readMode==='long'&&value.extensions?.sports&&<SportsResearch value={value.extensions.sports}/>}
     {readMode==='long'&&value.extensions?.music&&<MusicResearch value={value.extensions.music}/>}
     {readMode==='summary'&&(value.extensions?.sports||value.extensions?.music)&&<button className="text-button long-read-link" onClick={()=>setReadMode('long')}>Read model details and supporting evidence <ArrowUpRight size={14}/></button>}
-    <ContractNews key={value.ticker} ticker={value.ticker} model={value.view_model} initial={value.evidence} articles={value.news?.articles} feedback={feedback} onEvidence={receiveEvidence}/>
+    <ContractNews key={value.ticker} ticker={value.ticker} model={value.view_model} initial={value.evidence} articles={value.news?.articles} feedback={feedback} onEvidence={receiveEvidence} onAssistant={options=>onAssistant('evidence',options)}/>
     <details className="method"><summary>Method, validation and limitations</summary><p>{value.summary}</p><p>{value.decision?.validation_note}</p>{value.errors?.map((error,i)=><p key={i}>{error.source}: {error.error}</p>)}</details>
   </div>;
 }
@@ -145,13 +174,13 @@ function MarketAttribution({value}) {
   </details>;
 }
 
-export default function App() {
+export default function App({paperWorkspace=false}={}) {
   const account=useAccount();
   const paperLedger=usePaperLedger();
   const [category,setCategory]=useState('sports'),[markets,setMarkets]=useState([]),[query,setQuery]=useState(''),[listLabel,setListLabel]=useState('Sports'),
     [listLoading,setListLoading]=useState(true),[listError,setListError]=useState(''),[coverage,setCoverage]=useState(null),[rowLimit,setRowLimit]=useState(marketPageSize),
     [selection,dispatch]=useReducer(selectionReducer,initialSelection),[history,setHistory]=useState(null),[tab,setTab]=useState('overview'),
-    [researchLoading,setResearchLoading]=useState(false),[streamStatus,setStreamStatus]=useState('Connecting'),[paused,setPaused]=useState(false),
+    [researchPending,setResearchLoading]=useState(false),[streamStatus,setStreamStatus]=useState('Connecting'),[paused,setPaused]=useState(false),
     [assistant,setAssistant]=useState(false),[journal,setJournal]=useState(false),[sources,setSources]=useState(false),[sourceStatus,setSourceStatus]=useState(null),[attribution,setAttribution]=useState(null),
     [mobileDetail,setMobileDetail]=useState(false),[clock,setClock]=useState(Date.now()),[listRevision,setListRevision]=useState(0),
     [view,setView]=useState('markets'),[preferences,setPreferences]=useState(DEFAULT_PREFERENCES),[appearanceOpen,setAppearanceOpen]=useState(false),
@@ -160,15 +189,16 @@ export default function App() {
   const search=useRef(null),listIntent=useRef(0),listRoot=useRef(null),lookupRequest=useRef(null),archiveRequest=useRef(null),assistantSequence=useRef(0);
   const refreshAfterEvidence=useRef(null);
   const requestModelRefresh=useCallback(ticker=>refreshAfterEvidence.current?.(ticker),[]);
-  const reviews=usePositionReviews(paperLedger.ledger?.positions||noPositions,preferences.model);
+  const reviews=usePositionReviews(paperLedger.ledger?.positions||noPositions,preferences.model,paperLedger);
   const activeView=useRef(view);activeView.current=view;
   const closed=Boolean(selection.market&&(['closed','settled','finalized'].includes(selection.market.status)||Date.parse(selection.market.close_time)<=clock));
-  const select=useCallback((market,{openDetail=true}={})=>{listIntent.current++;dispatch({type:'select',market});setAssistant(false);setHistory(null);setTab('overview');setPaused(false);setMobileDetail(openDetail);},[]);
+  const researchLoading=selection.provisional||researchPending;
+  const select=useCallback((market,{openDetail=true,provisional=false}={})=>{listIntent.current++;dispatch({type:'select',market,provisional});setAssistant(false);setHistory(null);setTab('overview');setStreamStatus('Loading quote');setPaused(false);setMobileDetail(openDetail);},[]);
   const openMarket=useCallback(market=>{setView('markets');setPaperPreset(null);select(market);},[select]);
   const selectResearch=useCallback(market=>{openMarket(market);setTab('research');},[openMarket]);
   function changeCategory(id){setMobileDetail(false);if(view==='portfolio')setView('markets');if(id===category)return;lookupRequest.current?.abort();listIntent.current++;dispatch({type:'clear'});setHistory(null);setCoverage(null);setResearchLoading(false);setAssistant(false);setPaperPreset(null);setMarkets([]);setQuery('');setRowLimit(marketPageSize);setCategory(id);}
-  function updatePreferences(value){const next=appearance(value);setPreferences(next);try{localStorage.setItem(PREFERENCE_KEY,JSON.stringify(next));setPreferenceError(false);}catch{setPreferenceError(true);}}
-  useEffect(()=>{try{setPreferences(appearance(localStorage.getItem(PREFERENCE_KEY)));}catch{setPreferenceError(true);}},[]);
+  function updatePreferences(value){const next=appearance(value);if(next.model!==preferences.model)setAssistant(false);setPreferences(next);try{localStorage.setItem(PREFERENCE_KEY,JSON.stringify(next));setPreferenceError(false);}catch{setPreferenceError(true);}}
+  useEffect(()=>{try{migratePredictirStorage(localStorage);setPreferences(appearance(localStorage.getItem(PREFERENCE_KEY)));}catch{setPreferenceError(true);}},[]);
   useEffect(()=>{document.documentElement.dataset.theme=preferences.theme;},[preferences.theme]);
   useEffect(()=>{const id=setInterval(()=>{if(!document.hidden&&activeView.current!=='ranked')setClock(Date.now());},1000);const key=e=>{if(e.key==='Escape'){setAssistant(false);setJournal(false);setSources(false);setAppearanceOpen(false);setArchiveOpen(false);}if(e.key==='/'&&!['INPUT','TEXTAREA'].includes(document.activeElement?.tagName)&&!document.querySelector('.overlay,.assistant-panel')){e.preventDefault();setView('markets');setMobileDetail(false);requestAnimationFrame(()=>search.current?.focus());}};document.addEventListener('keydown',key);return()=>{clearInterval(id);document.removeEventListener('keydown',key);lookupRequest.current?.abort();};},[]);
   useEffect(()=>{
@@ -176,7 +206,7 @@ export default function App() {
     setListLoading(true);setListError('');setListLabel(categories.find(c=>c[0]===category)[1]);
     api('/api/workspace/markets?category='+category,{signal:controller.signal,timeoutMs:20000}).then(value=>{
       if(controller.signal.aborted||intent!==listIntent.current)return;
-      setMarkets(value.markets);setCoverage(value);if(value.markets.length&&!keepSelection)select(value.markets[0],{openDetail:false});
+      setMarkets(value.markets);setCoverage(value);if(value.markets.length&&!keepSelection)select(value.markets[0],{openDetail:false,provisional:true});
     }).catch(e=>{if(e.name!=='AbortError'&&!controller.signal.aborted)setListError(e.message);}).finally(()=>{if(!controller.signal.aborted)setListLoading(false);});
     return()=>controller.abort();
   },[category,listRevision]);
@@ -184,13 +214,19 @@ export default function App() {
     if(view!=='markets'||listLoading||listLabel==='Opened from link')return;
     const controller=new AbortController();let busy=false;
     const refresh=async()=>{if(document.hidden||busy)return;busy=true;const intent=listIntent.current;
-      try{const value=await api('/api/workspace/markets?category='+category,{signal:controller.signal,timeoutMs:20000});if(!controller.signal.aborted&&intent===listIntent.current){setMarkets(current=>refreshMarketRows(current,value.markets));setCoverage(value);setListError('');if(!selection.ticker&&value.markets.length)select(value.markets[0],{openDetail:false});}}
+      try{const value=await api('/api/workspace/markets?category='+category,{signal:controller.signal,timeoutMs:20000});if(!controller.signal.aborted&&intent===listIntent.current){setMarkets(current=>refreshMarketRows(current,value.markets));setCoverage(value);setListError('');if(!selection.ticker&&value.markets.length)select(value.markets[0],{openDetail:false,provisional:true});}}
       catch{}finally{busy=false;}};
     const timer=setInterval(refresh,coverage?.stale?8000:listError?30000:60000);document.addEventListener('visibilitychange',refresh);
     return()=>{controller.abort();clearInterval(timer);document.removeEventListener('visibilitychange',refresh);};
   },[category,view,listLoading,listLabel,coverage?.stale,listError,selection.ticker,select]);
   useEffect(()=>{
-    if(!selection.ticker||view!=='markets')return;
+    const {ticker,generation,provisional}=selection;
+    if(!ticker||!provisional||view!=='markets')return;
+    const timer=setTimeout(()=>dispatch({type:'activate',ticker,generation}),autoSelectionDelayMs);
+    return()=>clearTimeout(timer);
+  },[selection.ticker,selection.generation,selection.provisional,view]);
+  useEffect(()=>{
+    if(!selection.ticker||selection.provisional||view!=='markets')return;
     const {ticker,generation}=selection,controller=new AbortController();setResearchLoading(true);setStreamStatus('Loading quote');
     let running=false,lastRequest=0,lastFull=0,lastHistory=0,previous=null,pendingEvidenceRefresh=false;
     const options={signal:controller.signal};
@@ -206,37 +242,30 @@ export default function App() {
       try{const value=await api('/api/workspace/research?ticker='+encodeURIComponent(ticker)+'&model='+preferences.model+(compact?'&compact=1':''),{signal:AbortSignal.any([controller.signal,AbortSignal.timeout(60000)])});
         if(controller.signal.aborted||value.ticker!==ticker)return;const packet={...value,view_model:preferences.model};previous=compact?mergeResearchRefresh(previous,packet):packet;dispatch({type:'research',ticker,generation,value:previous});}
       catch(e){if(e.name!=='AbortError'&&!controller.signal.aborted){previous=previous?{...previous,error:'The matching research screen could not be refreshed.'}:{ticker,view_model:preferences.model,error:e.message,opinion:{side:'PASS',reason:e.message},errors:[],news:{articles:[]}};dispatch({type:'research',ticker,generation,value:previous});}}
-      finally{
-        running=false;
-        if(!controller.signal.aborted){
-          setResearchLoading(false);
-          if(pendingEvidenceRefresh){pendingEvidenceRefresh=false;refreshResearch(true);}
-        }
-      }
+      finally{running=false;if(!controller.signal.aborted){setResearchLoading(false);if(pendingEvidenceRefresh){pendingEvidenceRefresh=false;refreshResearch(true);}}}
     }
-    refreshAfterEvidence.current=selectedTicker=>{
-      if(selectedTicker!==ticker)return;
-      if(running)pendingEvidenceRefresh=true;
-      else refreshResearch(true);
-    };
+    refreshAfterEvidence.current=selectedTicker=>{if(selectedTicker!==ticker)return;if(running)pendingEvidenceRefresh=true;else refreshResearch(true);};
     const refreshIfDue=()=>{refreshHistory();if(Date.now()-lastRequest>=researchRefreshDelay(previous))refreshResearch(Date.now()-lastFull<300000);};
     refreshResearch();const timer=setInterval(refreshIfDue,20000);document.addEventListener('visibilitychange',refreshIfDue);
     return()=>{refreshAfterEvidence.current=null;controller.abort();clearInterval(timer);document.removeEventListener('visibilitychange',refreshIfDue);};
-  },[selection.ticker,selection.generation,view,preferences.model]);
+  },[selection.ticker,selection.generation,selection.provisional,view,preferences.model]);
   useEffect(()=>{
-    if(!selection.ticker||paused||closed||view!=='markets')return;const {ticker,generation}=selection;let stream,stopped=false,retryTimer,retries=0;
+    if(!selection.ticker||selection.provisional||paused||closed||view!=='markets')return;const {ticker,generation}=selection;let stream,stopped=false,retryTimer,retries=0,lastPoll=0;
     const controller=new AbortController();
     const receive=value=>{if(!stopped)dispatch({type:'book',ticker,generation,value});};
-    const refresh=()=>{if(!document.hidden&&!stopped)api('/api/book?ticker='+encodeURIComponent(ticker)+'&contracts=1',{signal:controller.signal}).then(value=>{receive({...value,transport:'public-rest-snapshot'});if(!stream)setStreamStatus('REST snapshot');}).catch(e=>{if(e.name!=='AbortError'&&!stopped)setStreamStatus('Quote unavailable');});};
-    function connect(){if(stopped||document.hidden||stream)return;stream=new EventSource(API_BASE+'/api/stream?ticker='+encodeURIComponent(ticker));
-      stream.onmessage=event=>{try{const value=JSON.parse(event.data);if(value.kind==='quote'){receive(value);setStreamStatus('Live stream');retries=0;}else if(value.kind==='connection')setStreamStatus(value.status==='connected'?'Live stream':value.status);}catch{setStreamStatus('Stream response unavailable');}};
-      stream.onerror=()=>{stream?.close();stream=null;if(!stopped){setStreamStatus('Stream reconnecting');retryTimer=setTimeout(connect,Math.min(30000,1000*2**Math.min(retries++,5)));}};
+    const refresh=()=>{if(!document.hidden&&!stopped&&(!stream||Date.now()-lastPoll>45000))api('/api/book?ticker='+encodeURIComponent(ticker)+'&contracts=1',{signal:controller.signal}).then(value=>{receive({...value,transport:'public-rest-snapshot'});if(!stream)setStreamStatus('REST snapshot');}).catch(e=>{if(e.name!=='AbortError'&&!stopped)setStreamStatus('Quote unavailable');});};
+    function connect(){if(stopped||document.hidden||stream)return;stream=openEventStream('/api/stream?ticker='+encodeURIComponent(ticker));
+      stream.onmessage=event=>{try{const value=JSON.parse(event.data),polled=value.transport==='public-rest-poll';
+        if(value.kind==='quote'){if(polled)lastPoll=Date.parse(value.as_of);receive(value);setStreamStatus(polled?'Public quote polling':'Live stream');retries=0;}
+        else if(value.kind==='connection')setStreamStatus(polled&&value.status==='backoff'?'Public polling paused':value.status==='connected'?'Live stream':value.status);
+      }catch{setStreamStatus('Stream response unavailable');}};
+      stream.onerror=error=>{stream?.close();stream=null;if(!stopped){setStreamStatus('Stream reconnecting');retryTimer=setTimeout(connect,Math.max(error.retryAfterMs||0,Math.min(30000,3000*(1+Math.random()*.2)*2**Math.min(retries++,4))));}};
     }
     refresh();connect();const interval=setInterval(refresh,30000);
     const visible=()=>{if(document.hidden){stream?.close();stream=null;clearTimeout(retryTimer);}else{refresh();connect();}};
     document.addEventListener('visibilitychange',visible);
     return()=>{stopped=true;controller.abort();stream?.close();clearInterval(interval);clearTimeout(retryTimer);document.removeEventListener('visibilitychange',visible);};
-  },[selection.ticker,selection.generation,paused,closed,view]);
+  },[selection.ticker,selection.generation,selection.provisional,paused,closed,view]);
   async function lookup(event){event.preventDefault();if(!/^https:\/\/|^[A-Z0-9_.]+-[A-Z0-9_.-]+$/i.test(query.trim()))return;
     lookupRequest.current?.abort();const controller=new AbortController(),intent=++listIntent.current;lookupRequest.current=controller;
     setListLoading(true);setListError('');dispatch({type:'clear'});setHistory(null);
@@ -250,18 +279,18 @@ export default function App() {
   const selectedResearch=selection.research?.ticker===market?.ticker&&selection.research?.view_model===preferences.model?selection.research:null;
   const selectedOpinion=researchScreenOpinion(selectedResearch,clock);
   const assistantLaunch=assistant?.ticker===market?.ticker&&assistant?.model===preferences.model?assistant:null;
-  function openAssistant({question,label,executionControls}={}){
+  function openAssistant(context){
     if(!market)return;
-    setAssistant({id:++assistantSequence.current,ticker:market.ticker,model:preferences.model,question,label,executionControls});
+    const launch=context||assistantContext(tab==='rules'?'rules':tab==='paper'?'paper':'analysis',market.ticker,{detail:'full'});
+    setAssistant({...launch,id:++assistantSequence.current,ticker:market.ticker,model:preferences.model});
   }
-  function askResearch(){
-    const verdict=selectedOpinion?.side||'unavailable',asOf=selectedResearch?.as_of;
-    openAssistant({label:'Research view',question:`Explain the research view for ${market.ticker}. The screen showed ${verdict}${asOf?` and was checked at ${asOf}`:''}. What evidence, model assumptions and execution costs drove that result?`});
+  function askPanel(panel,options){
+    if(!market)return;
+    const context=assistantContext(panel,market.ticker,options);
+    if(context)openAssistant(context);
   }
   function askExecution(result){
-    if(result?.ticker!==market?.ticker||!result.controls)return;
-    const {action,side,contracts,horizon_seconds}=result.controls;
-    openAssistant({label:'Execution lab result',executionControls:result.controls,question:`Explain the execution lab result for ${market.ticker}: ${action} ${side.toUpperCase()}, ${contracts} contracts over ${horizon_seconds} seconds. The scenario used the book observed at ${result.book_as_of||result.as_of||'an unverified time'}. Explain the fill estimate, cost comparison and limits of this paper scenario.`});
+    if(result)askPanel('execution',{result,detail:'full'});
   }
   async function refreshExecutionBook(signal){
     const {ticker,generation}=selection;
@@ -285,6 +314,8 @@ export default function App() {
     lookupRequest.current?.abort();const controller=new AbortController(),intent=++listIntent.current;lookupRequest.current=controller;setNavigationError('');
     const value=await api('/api/workspace/context?ticker='+encodeURIComponent(row.ticker),{signal:controller.signal});
     if(controller.signal.aborted||intent!==listIntent.current)return;
+    if(categories.some(([id])=>id===value.market.category))setCategory(value.market.category);
+    setQuery('');setRowLimit(marketPageSize);
     setView('markets');select(value.market);setPaperPreset(Number.isFinite(budget)&&row.contracts>0?{ticker:row.ticker,side:String(row.side).toLowerCase(),quantity:row.contracts,budget,
       probability:row.probability_yes,interval:row.interval_yes,model:row.model,as_of:row.source_as_of,source:row.experimental?'experimental_model':'model_scenario'}:null);setTab(Number.isFinite(budget)&&row.contracts>0?'paper':'research');
   }
@@ -294,34 +325,35 @@ export default function App() {
   async function inspectArchive(row){try{await openFromWorkspace(row);setArchiveOpen(false);}catch(error){if(error.name!=='AbortError')setArchiveError(error.message);}}
   return <div className={'workspace '+(mobileDetail?'show-detail':'')+(assistantLaunch&&view==='markets'?' with-assistant':'')} data-layout={preferences.layout} data-density={preferences.density}>
     <a className="skip-link" href="#contract-content">Skip to selected contract</a>
-    <aside className="sidebar"><a className="brand" href="/" aria-label="Predictir"><span className="brand-mark" aria-hidden="true">K</span><span className="brand-name">Kalshi<br/><strong>Market Lab</strong></span></a><div className="nav-label">Markets</div><nav aria-label="Market categories">{categories.map(([id,name,Icon])=><button key={id} aria-label={name} title={name} data-analytics-category={id} className={id===category?'active':''} aria-current={id===category?'page':undefined} onClick={()=>changeCategory(id)}><Icon size={18}/><span>{name}</span></button>)}</nav>
-      <div className="sidebar-bottom"><button aria-label="Forecast journal" title="Forecast journal" onClick={()=>setJournal(true)}><BookOpen size={18}/><span>Forecast journal</span></button><button aria-label="Data sources" title="Data sources" onClick={openSources}><Database size={18}/><span>Data sources</span></button><a href="/research/research-audit.pdf" aria-label="Methods and audit PDF" title="Methods and audit PDF" target="_blank" rel="noreferrer"><FileText size={18}/><span>Methods & audit</span></a><button aria-label="Appearance and models" title="Appearance and models" onClick={()=>setAppearanceOpen(true)}><Palette size={18}/><span>Appearance & models</span></button><a href="https://github.com/DaniyalHayat/predictir" aria-label="Project source" title="Project source" target="_blank" rel="noreferrer"><ExternalLink size={16}/><span>Project source</span></a><small>predictir.dev <span>Paper trading only</span></small></div></aside>
-    <main className="main-workspace"><header className="workspace-header"><div><span className="breadcrumb">Market Lab</span><span className="breadcrumb-separator">/</span><strong>{view==='markets'?listLabel:view==='ranked'?'Recommended trades':'Portfolio'}</strong></div><div className="header-actions"><span className={'model-mode '+(preferences.model==='challenger'?'experimental':'')} title="Change the research model in Appearance & models">{preferences.model==='challenger'?'Experimental ensemble':'Validated model view'}</span><button className="icon-button appearance-button" aria-label="Appearance and model settings" onClick={()=>setAppearanceOpen(true)}><Palette size={18}/></button><button className="secondary compact" aria-label="Forecast journal" onClick={()=>setJournal(true)}><BookOpen size={15}/><span>Journal</span></button><button className="account-button secondary compact" aria-label={account.session?.kind==='owner'?'Your account':'Sign in'} onClick={()=>setAccountOpen(true)}><UserRound size={15}/><span>{account.session?.kind==='owner'?'Account':'Sign in'}</span>{account.conflict&&<i className="account-attention"/>}</button></div></header>
-      <nav className="workspace-view-tabs" aria-label="Workspace views">{[['markets','Markets',LayoutDashboard],['ranked','Recommended trades',ChartNoAxesCombined],['portfolio','Portfolio',Wallet]].map(([id,label,Icon])=><button key={id} aria-current={view===id?'page':undefined} className={view===id?'active':''} onClick={()=>{setView(id);setAssistant(false);setNavigationError('');}}><Icon size={15}/>{label}</button>)}</nav>
+    <aside className="sidebar"><a className="brand" href="/" aria-label="Predictir"><span className="brand-mark" aria-hidden="true">P</span><span className="brand-name">Predictir<br/><strong>Market Lab</strong></span></a><div className="nav-label">Markets</div><nav aria-label="Market categories">{categories.map(([id,name,Icon])=><button key={id} aria-label={name} title={name} data-analytics-category={id} className={id===category?'active':''} aria-current={id===category?'page':undefined} onClick={()=>changeCategory(id)}><Icon size={18}/><span>{name}</span></button>)}</nav>
+      <div className="sidebar-bottom"><button aria-label="Forecast journal" title="Forecast journal" onClick={()=>setJournal(true)}><BookOpen size={18}/><span>Forecast journal</span></button><button aria-label="Data sources" title="Data sources" onClick={openSources}><Database size={18}/><span>Data sources</span></button><button aria-label="Appearance and models" title="Appearance and models" onClick={()=>setAppearanceOpen(true)}><Palette size={18}/><span>Appearance & models</span></button><a href="https://github.com/DaniyalHayat/predictir" aria-label="Project source" title="Project source" target="_blank" rel="noreferrer"><ExternalLink size={16}/><span>Project source</span></a><small>predictir.dev <span>Paper trading only</span></small><small className="brand-disclaimer">Independent paper-trading research. Predictir accounts store simulated positions only.</small></div></aside>
+    <main className="main-workspace"><header className="workspace-header"><div><span className="breadcrumb">Market Lab</span><span className="breadcrumb-separator">/</span><strong>{view==='markets'?listLabel:view==='ranked'?'Recommended trades':'Portfolio'}</strong></div><div className="header-actions"><span className={'model-mode '+(preferences.model==='challenger'?'experimental':'')} title="Change the research model in Appearance & models">{preferences.model==='challenger'?'Experimental ensemble':'Baseline model'}</span><button className="icon-button appearance-button" aria-label="Appearance and model settings" onClick={()=>setAppearanceOpen(true)}><Palette size={18}/></button><button className="secondary compact" aria-label="Forecast journal" onClick={()=>setJournal(true)}><BookOpen size={15}/><span>Journal</span></button><button className="account-button secondary compact" aria-label={account.session?.kind==='owner'?'Your account':'Sign in'} onClick={()=>setAccountOpen(true)}><UserRound size={15}/><span>{account.session?.kind==='owner'?'Account':'Sign in'}</span>{account.conflict&&<i className="account-attention"/>}</button></div></header>
+      <nav className="workspace-view-tabs" aria-label="Workspace views">{[['markets','Markets',LayoutDashboard],['ranked','Recommended trades',ChartNoAxesCombined],['portfolio','My Trades',Wallet]].map(([id,label,Icon])=><button key={id} aria-current={view===id?'page':undefined} className={view===id?'active':''} onClick={()=>{setView(id);setAssistant(false);setNavigationError('');}}><Icon size={15}/>{label}</button>)}</nav>
       {navigationError&&<p className="notice error navigation-error" role="alert">{navigationError}</p>}
       {view==='portfolio'&&<div className="session-banner"><span>{account.session?.kind==='owner'?account.sync:'Guest paper account · records last up to 6 hours'}</span><button className="text-button" onClick={()=>setAccountOpen(true)}>{account.session?.kind==='owner'?(account.conflict?'Review saved versions':'Your account'):'Sign in to keep your saved trades'}<ArrowUpRight size={13}/></button></div>}
       {reviews.alerts.length>0&&<div aria-label="Paper position alerts" role="status">{reviews.alerts.map(alert=><div className="position-alert" key={alert.id}>
         <strong>Paper SELL signal</strong><span>{alert.title} · {alert.reason}</span><button className="text-button" onClick={()=>setView('portfolio')}>My Trades</button>
         <button className="text-button" onClick={()=>reviews.dismiss(alert.id)}>Dismiss</button></div>)}</div>}
       {view==='ranked'?<Recommendations category={category} categoryName={categories.find(row=>row[0]===category)?.[1]} model={preferences.model} onOpen={openRecommendation}/>:view==='portfolio'?<Portfolio paperLedger={paperLedger} reviews={reviews} onOpen={openFromWorkspace} onMarkets={()=>setView('markets')} clock={clock} model={preferences.model} theme={preferences.theme}/>:<div className="workspace-columns"><section className="market-list" aria-label="Market list"><div className="market-list-heading"><div><h1>{listLabel}</h1><span>{listLoading?'Loading contracts…':`${filtered.length} ${filtered.length===1?'contract':'contracts'}`}</span></div><button className="icon-button" aria-label="Refresh market list" onClick={()=>setListRevision(v=>v+1)} disabled={listLoading}><RefreshCw size={17} className={listLoading?'spin':''}/></button></div>
-        <form className="market-search" onSubmit={lookup}><Search size={17}/><label className="sr-only" htmlFor="market-search">Search contracts or paste a Kalshi URL</label><input id="market-search" ref={search} value={query} onChange={e=>{setQuery(e.target.value);setRowLimit(marketPageSize);}} placeholder="Search or paste a Kalshi URL"/><kbd>/</kbd></form>
+        <form className="market-search" onSubmit={lookup}><Search size={17}/><label className="sr-only" htmlFor="market-search">Search contracts or paste an exchange URL</label><input id="market-search" ref={search} value={query} onChange={e=>{setQuery(e.target.value);setRowLimit(marketPageSize);}} placeholder="Search or paste an exchange URL"/><kbd>/</kbd></form>
         <div className="list-columns"><span>Contract</span><span>YES / NO</span></div>
-        <div className="market-rows" ref={listRoot} aria-busy={listLoading&&!displayed.length}>{listError&&<div className="notice error" role="alert">{listError}<button className="text-button" onClick={()=>setListRevision(v=>v+1)}>Try again</button></div>}{listLoading&&!displayed.length&&<div className="list-loading" role="status"><Loader2 size={18} className="spin"/><span>Loading exchange contracts</span></div>}{displayed.map(row=><MarketRow key={row.ticker} row={row} selected={row.ticker===selection.ticker} livePrices={row.ticker===selection.ticker?{yes:ask,no:bid===null?null:1-bid}:null} opinion={row.ticker===selection.ticker?selectedOpinion||opinions[row.ticker]:opinions[row.ticker]} onSelect={openMarket} onResearch={selectResearch}/>)}{displayed.length<filtered.length&&<button className="text-button" onClick={()=>setRowLimit(limit=>limit+marketPageSize)}>Show more contracts</button>}{!listLoading&&!filtered.length&&!listError&&<div className="empty">No matching contracts in this sample. Try another category or paste an exact Kalshi URL.{query.trim().length>=2&&<button className="text-button" onClick={searchArchive}>Search observed history <ArrowUpRight size={13}/></button>}</div>}</div>
+        <div className="market-rows" ref={listRoot} aria-busy={listLoading&&!displayed.length}>{listError&&<div className="notice error" role="alert">{listError}<button className="text-button" onClick={()=>setListRevision(v=>v+1)}>Try again</button></div>}{listLoading&&!displayed.length&&<div className="list-loading" role="status"><Loader2 size={18} className="spin"/><span>Loading exchange contracts</span></div>}{displayed.map(row=><MarketRow key={row.ticker} row={row} selected={row.ticker===selection.ticker} livePrices={row.ticker===selection.ticker?{yes:ask,no:bid===null?null:1-bid}:null} opinion={row.ticker===selection.ticker?selectedOpinion||opinions[row.ticker]:opinions[row.ticker]} onSelect={openMarket} onResearch={selectResearch}/>)}{displayed.length<filtered.length&&<button className="text-button" onClick={()=>setRowLimit(limit=>limit+marketPageSize)}>Show more contracts</button>}{!listLoading&&!filtered.length&&!listError&&<div className="empty">No matching contracts in this sample. Try another category or paste an exact exchange URL.{query.trim().length>=2&&<button className="text-button" onClick={searchArchive}>Search observed history <ArrowUpRight size={13}/></button>}</div>}</div>
         <div className="list-footer" title={'Catalog checked '+dateLabel(coverage?.as_of)+'; refreshes once a minute while visible.'}><span className="status-dot"/>{coverage?.stale?'Showing last snapshot':'Catalog snapshot'}{coverage?.partial&&<span>Partial coverage</span>}<button className="text-button" onClick={openSources}>Coverage</button></div>
       </section>
       <section className="contract-panel" id="contract-content" aria-label="Selected contract">{market?<>
-        <div className="contract-heading"><button className="mobile-back text-button" onClick={()=>setMobileDetail(false)}><ArrowLeft size={16}/>Markets</button><div className="contract-meta"><span>{categories.find(c=>c[0]===market.category)?.[1]||listLabel}</span><span>Trading closes {dateLabel(market.close_time)}</span></div><h2 data-testid="selected-title">{contractTitle(market)}</h2>{eventTitle&&eventTitle!==contractTitle(market)&&<p className="contract-event" data-testid="selected-event">{eventTitle}</p>}{scheduledAt&&Number.isFinite(Date.parse(scheduledAt))&&<p className="contract-schedule">Scheduled <time dateTime={scheduledAt}>{new Date(scheduledAt).toLocaleString(undefined,{year:'numeric',month:'short',day:'numeric',hour:'numeric',minute:'2-digit',timeZoneName:'short'})}</time></p>}<div className="contract-identity"><code data-testid="selected-ticker">{market.ticker}</code><div className="contract-links"><button className="text-button save-market" aria-pressed={account.watchlist.includes(market.ticker)} disabled={account.status!=='ready'} onClick={()=>{try{toggleSavedMarket(market.ticker);}catch(error){setNavigationError(error.message);}}}><Bookmark size={13}/>{account.watchlist.includes(market.ticker)?'Saved':'Save'}</button><a href={'https://kalshi.com/markets/'+(selectedResearch?.series||market.ticker.split('-')[0]).toLowerCase()} target="_blank" rel="noreferrer">On Kalshi <ArrowUpRight size={13}/></a></div></div></div>
+        <div className="contract-heading"><button className="mobile-back text-button" onClick={()=>setMobileDetail(false)}><ArrowLeft size={16}/>Markets</button><div className="contract-meta"><span>{categories.find(c=>c[0]===market.category)?.[1]||listLabel}</span><span>Trading closes {dateLabel(market.close_time)}</span></div><h2 data-testid="selected-title">{contractTitle(market)}</h2>{eventTitle&&eventTitle!==contractTitle(market)&&<p className="contract-event" data-testid="selected-event">{eventTitle}</p>}{scheduledAt&&Number.isFinite(Date.parse(scheduledAt))&&<p className="contract-schedule">Scheduled <time dateTime={scheduledAt}>{new Date(scheduledAt).toLocaleString(undefined,{year:'numeric',month:'short',day:'numeric',hour:'numeric',minute:'2-digit',timeZoneName:'short'})}</time></p>}<div className="contract-identity"><code data-testid="selected-ticker">{market.ticker}</code><div className="contract-links"><button className="text-button save-market" aria-pressed={account.watchlist.includes(market.ticker)} disabled={account.status!=='ready'} onClick={()=>{try{toggleSavedMarket(market.ticker);}catch(error){setNavigationError(error.message);}}}><Bookmark size={13}/>{account.watchlist.includes(market.ticker)?'Saved':'Save'}</button><a href={'https://kalshi.com/markets/'+(selectedResearch?.series||market.ticker.split('-')[0]).toLowerCase()} target="_blank" rel="noreferrer">View exchange <ArrowUpRight size={13}/></a></div></div></div>
         <div className="quote-strip"><div><small>YES ask</small><strong className="yes-price">{cents(ask)}</strong></div><div><small>NO ask</small><strong className="no-price">{bid===null?'—':cents(1-bid)}</strong></div><div><small>YES spread</small><strong>{bid===null||ask===null?'—':cents(ask-bid)}</strong></div><button className="stream-state" onClick={()=>setPaused(v=>!v)} aria-pressed={paused}><span className={'status-dot '+(age===null||age>90||paused||closed?'delayed':'')}/><span>{closed?'Closed':paused?'Stream paused':streamStatus}<small>{age===null?'Waiting for quote':`${age}s since observation`}</small></span><ChevronDown size={14}/></button></div>
+        <QuoteComparison bid={bid} ask={ask} age={age} forecast={selectedResearch?.forecast} stale={Boolean(selectedOpinion?.stale)} loading={researchLoading}/>
         {selection.error&&<div className="notice error" role="alert">{selection.error}</div>}
-        <div className="contract-tabs" role="tablist" aria-label="Contract details">{CONTRACT_TABS.map(([id,label])=><button key={id} id={'contract-tab-'+id} role="tab" aria-selected={tab===id} aria-controls="contract-tabpanel" tabIndex={tab===id?0:-1} onKeyDown={event=>{const next=moveContractTab(id,event.key);if(next){event.preventDefault();setTab(next);document.getElementById('contract-tab-'+next)?.focus();}}} onClick={()=>setTab(id)}>{label}{id==='research'&&researchLoading&&<Loader2 size={12} className="spin"/>}</button>)}<button className="ask-button" onClick={()=>assistantLaunch?setAssistant(false):openAssistant()} aria-expanded={Boolean(assistantLaunch)} aria-label="Ask about this contract"><MessageSquare size={15}/><span>Ask</span></button></div>
+        <div className="contract-tabs"><div className="contract-tab-list" role="tablist" aria-label="Contract details">{CONTRACT_TABS.map(([id,label])=><button key={id} id={'contract-tab-'+id} role="tab" aria-selected={tab===id} aria-controls="contract-tabpanel" tabIndex={tab===id?0:-1} onKeyDown={event=>{const next=moveContractTab(id,event.key);if(next){event.preventDefault();setTab(next);document.getElementById('contract-tab-'+next)?.focus();}}} onClick={()=>setTab(id)}>{label}{id==='research'&&researchLoading&&<Loader2 size={12} className="spin"/>}</button>)}</div><button className="ask-button" onClick={()=>assistantLaunch?setAssistant(false):openAssistant()} aria-expanded={Boolean(assistantLaunch)} aria-label="Ask why about this contract"><MessageSquare size={15}/><span>Ask why</span></button></div>
         <div className="contract-scroll" key={market.ticker} id="contract-tabpanel" role="tabpanel" aria-labelledby={'contract-tab-'+tab} tabIndex={0}>
-          {tab==='overview'&&<><div className="section-title"><h3>Exchange price history</h3><span className="tag">24h</span></div><Chart rows={history?.rows||[]} error={history?.error} theme={preferences.theme} label={'Observed exchange price history for '+contractTitle(market)}/>{history?.as_of&&<p className="history-scope footnote">Checked {dateLabel(history.as_of)}. {history.scope||'Exchange candle closes; missing observations are not filled.'}</p>}<div className="section-title"><h3>Order book</h3><small>{book?.transport==='exchange-websocket'?'Native exchange stream':'Observed depth'}</small></div><Depth book={book}/><div className="section-title"><h3>Research view</h3><button className="text-button" onClick={()=>setTab('research')}>Full analysis <ArrowUpRight size={14}/></button></div><Research compact value={selectedResearch} history={history?.ticker===market.ticker?history:null} now={clock} loading={researchLoading} onAssistant={askResearch} onPaper={openSelectedPaper}/></>}
-          {tab==='research'&&<Research key={market.ticker+'#'+preferences.model} value={selectedResearch} history={history?.ticker===market.ticker?history:null} now={clock} loading={researchLoading} onAssistant={askResearch} onPaper={openSelectedPaper} onModelEvidence={requestModelRefresh}/>}
-          {tab==='paper'&&<Paper key={market.ticker} market={market} book={book} forecast={selectedResearch?.forecast} fees={selection.fees} now={clock} preset={paperPreset} onPortfolio={()=>setView('portfolio')}/>}
-          {tab==='execution'&&<ExecutionLab key={market.ticker+'#'+preferences.model} market={market} book={book} fees={selection.fees} clock={clock} closed={closed} onRefreshDepth={refreshExecutionBook} model={preferences.model} initialControls={executionContext?.ticker===market.ticker?executionContext.controls:null} onControlsChange={controls=>setExecutionContext({ticker:market.ticker,controls})} onAssistant={askExecution}/>}
-          {tab==='rules'&&<><div className="section-title"><h3>Settlement rules</h3></div><p className="rule-text">{market.rules_primary||'No primary rule text was returned. Inspect the exchange contract.'}</p>{market.rules_secondary&&<details className="method"><summary>Secondary rules</summary><p>{market.rules_secondary}</p></details>}<dl className="definition-list"><div><dt>Trading close</dt><dd>{dateLabel(market.close_time)}</dd></div><div><dt>Expected expiration</dt><dd>{dateLabel(market.expected_expiration_time)}</dd></div><div><dt>Status / outcome</dt><dd>{market.status||'Unknown'} / {market.result||'Unsettled'}</dd></div></dl><h3>Source records</h3><SourceRows sources={selection.research?.sources||[]}/><p className="footnote">Close, expiration and settlement are separate events. Source timestamps and missing evidence remain visible.</p></>}
+          {tab==='overview'&&<><div className="section-title"><h3>Exchange price history <span className="tag">24h</span></h3><AskWhy panel="history" onAsk={askPanel} label="exchange price history"/></div><Chart rows={history?.rows||[]} error={history?.error} theme={preferences.theme} label={'Observed exchange price history for '+contractTitle(market)}/>{history?.as_of&&<p className="history-scope footnote">Checked {dateLabel(history.as_of)}. {history.scope||'Exchange candle closes; missing observations are not filled.'}</p>}<div className="section-title"><h3>Order book</h3><small>{book?.transport==='exchange-websocket'?'Native exchange stream':book?.transport==='public-rest-poll'?'Polled exchange snapshot':'Observed depth'}</small></div><Depth book={book}/><div className="section-title"><h3>Research view</h3><button className="text-button" onClick={()=>setTab('research')}>Full analysis <ArrowUpRight size={14}/></button></div><Research compact value={selectedResearch} history={history?.ticker===market.ticker?history:null} now={clock} loading={researchLoading} onAssistant={askPanel} onPaper={openSelectedPaper}/></>}
+          {tab==='research'&&<Research key={market.ticker+'#'+preferences.model} value={selectedResearch} history={history?.ticker===market.ticker?history:null} now={clock} loading={researchLoading} onAssistant={askPanel} onPaper={openSelectedPaper} onModelEvidence={requestModelRefresh}/>}
+          {tab==='paper'&&<Paper key={market.ticker} market={market} book={book} forecast={selectedResearch?.forecast} fees={selection.fees} now={clock} preset={paperPreset} onPortfolio={()=>setView('portfolio')} assistantAction={<AskWhy panel="paper" onAsk={askPanel} label="paper position sizing"/>}/>}
+          {tab==='execution'&&<ExecutionLab key={market.ticker+'#'+preferences.model} market={market} book={book} fees={selection.fees} clock={clock} closed={closed} onRefreshDepth={refreshExecutionBook} model={preferences.model} initialControls={executionContext?.ticker===market.ticker?executionContext.controls:null} onControlsChange={controls=>setExecutionContext({ticker:market.ticker,controls})} onAssistant={askExecution} paperWorkspace={paperWorkspace}/>}
+          {tab==='rules'&&<><div className="section-title"><h3>Settlement rules</h3><AskWhy panel="rules" onAsk={askPanel} label="settlement rules"/></div><p className="rule-text">{market.rules_primary||'No primary rule text was returned. Inspect the exchange contract.'}</p>{market.rules_secondary&&<details className="method"><summary>Secondary rules</summary><p>{market.rules_secondary}</p></details>}<dl className="definition-list"><div><dt>Trading close</dt><dd>{dateLabel(market.close_time)}</dd></div><div><dt>Expected expiration</dt><dd>{dateLabel(market.expected_expiration_time)}</dd></div><div><dt>Status / outcome</dt><dd>{market.status||'Unknown'} / {market.result||'Unsettled'}</dd></div></dl><div className="section-title"><h3>Source records</h3><AskWhy panel="sources" onAsk={askPanel} label="source records"/></div><SourceRows sources={selectedResearch?.sources||[]}/><p className="footnote">Close, expiration and settlement are separate events. Source timestamps and missing evidence remain visible.</p></>}
         </div></>:<div className="contract-placeholder"><Activity size={28}/><h2>Select a contract</h2><p>Its rules, prices and analysis will appear here.</p></div>}</section>
-      {assistantLaunch&&<Assistant key={assistantLaunch.id} market={market} research={selectedResearch} model={assistantLaunch.model} launch={assistantLaunch} onClose={()=>setAssistant(false)}/>}
+      {assistantLaunch&&<Assistant key={assistantLaunch.id} market={market} book={book} fees={selection.fees} research={selectedResearch} history={history} model={assistantLaunch.model} launch={assistantLaunch} onClose={()=>setAssistant(false)}/>}
       </div>}
     </main>
     {journal&&<Journal onClose={()=>setJournal(false)}/>}

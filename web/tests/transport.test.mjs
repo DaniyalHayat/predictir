@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {createServer} from 'node:http';
 import {readJSON,fetchJSON} from '../lib/transport.mjs';
-import {initialSelection, selectionReducer, contractTitle} from '../ui/selection.mjs';
+import {initialSelection, selectionReducer, contractTitle} from '../ui/selection.ts';
 
 test('HTML success and proxy failure responses become a useful typed error', async () => {
   for (const status of [200, 502]) await assert.rejects(() => readJSON(new Response('<!doctype html><h1>Unavailable</h1>',
@@ -12,6 +12,12 @@ test('JSON errors and byte bounds are enforced without returning raw markup', as
   await assert.rejects(() => readJSON(new Response('{"error":"Wait before retrying"}', {status:429})), /Wait before retrying/);
   await assert.rejects(() => readJSON(new Response('{"data":"1234567890"}'), {maximumBytes:5}), /too much data/);
   assert.deepEqual((await readJSON(new Response('{"ok":true}'))).data, {ok:true});
+});
+test('rate-limited responses preserve retry timing across proxy response formats', async () => {
+  for(const body of ['{"error":"Slow down"}','<!doctype html>','Too many requests','']){
+    await assert.rejects(readJSON(new Response(body,{status:429,headers:{'retry-after':'90'}})),
+      error=>error.status===429&&error.retryAfterMs===90000);
+  }
 });
 test('request deadlines cover both a stalled response and a body that never completes',async t=>{
   const server=createServer((request,response)=>{

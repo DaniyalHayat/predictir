@@ -3,15 +3,16 @@ import { marketDetails, request, book, validateTicker } from '../live.mjs';
 import { CATEGORIES } from './catalog.mjs';
 import { selectedResearch, modelEvidence } from './index.mjs';
 import { executionEstimate } from './math.mjs';
-import { evidenceEntities,evidenceTopicGroups,sportsEvidenceClaim,sportsTeamMention,topicWords } from '../workspace/source-ranking.mjs';
+import { evidenceEntities,evidenceTopicGroups,evidenceMeasurementProfile,measurementEvidenceMatch,sportsEvidenceClaim,sportsTeamMention,topicWords } from '../workspace/source-ranking.mjs';
 import { nflContractIdentity } from '../workspace/nfl-source.mjs';
+import {htmlText} from '../runtime/html-text.mjs';
 
 const NEWS_ENDPOINT = 'https://api.gdeltproject.org/api/v2/doc/doc';
 const RSS_ENDPOINT = 'https://news.google.com/rss/search';
 const NEWS_WINDOW = 7 * 86400000;
 const newsState = { cache: new Map(), inflight: new Map(), retryAt: 0 };
 const clean = (value, maximum = 6000) => typeof value === 'string'
-  ? value.replace(/<[^>]*>/g, '').replace(/[\u0000-\u001f\u007f]/g, ' ').trim().slice(0, maximum) : '';
+  ? htmlText(value,maximum) : '';
 function publicURL(value) {
   try { const url = new URL(value); return ['https:', 'http:'].includes(url.protocol) && !url.username && !url.password ? url.href : null; }
   catch { return null; }
@@ -79,9 +80,18 @@ export function filterSportsHeadlines(news,context) {
     filtered_out:(news?.articles?.length||0)-articles.length,relevance_scope:context.league+' headlines about availability, schedule changes or the matched fixture.'};
 }
 
+export function filterContractHeadlines(news,market,context){
+  const filtered=filterSportsHeadlines(news,context);
+  if(!filtered||!measurementEvidenceMatch(market,'').applicable)return filtered;
+  const articles=(filtered.articles||[]).filter(article=>measurementEvidenceMatch(market,article.title,article.description||article.excerpt,article.publisher_url||article.url).accepted);
+  return {...filtered,articles,status:filtered.status==='live'&&!articles.length?'empty':filtered.status,
+    filtered_out:(news?.articles?.length||0)-articles.length,relevance_scope:'Reports must match the contract subject and measured quantity. Matching a city or organization alone is insufficient.'};
+}
+
 export function newsQuery(market, category) {
   const sports=sportsNewsContext(market,category);if(sports)return sports.query||null;
-  const groups=evidenceTopicGroups(market);
+  const profile=evidenceMeasurementProfile(market),groups=evidenceTopicGroups(market);
+  if(profile?.usScope)groups.push(['U.S.','United States','BLS']);
   if(groups.length)return groups.map(group=>group.length===1?'"'+group[0]+'"':'('+group.map(term=>'"'+term+'"').join(' OR ')+')').join(' ')+' sourcelang:english';
   const fixed = { travel: '"TSA" "passenger"', weather: '"weather" "temperature"',
     inflation: '"US" "inflation"', labor: '"US" "unemployment"',
@@ -172,7 +182,7 @@ async function fetchRssHeadlines(query, { fetcher, now, state, reason, timeoutMs
     let value;
     try {
       const response = await fetcher(key, { method: 'GET', headers: { Accept: 'application/rss+xml, application/xml, text/xml',
-        'User-Agent': 'KalshiMarketLab/3.0 headline-metadata-research' }, signal: AbortSignal.timeout(timeoutMs), redirect: 'error', cache: 'no-store' });
+        'User-Agent': 'Predictir/3.0 headline-metadata-research' }, signal: AbortSignal.timeout(timeoutMs), redirect: 'error', cache: 'no-store' });
       if (response.status === 429) { state.rssRetryAt = now() + 600000; throw new Error('Google News returned HTTP 429; retries paused'); }
       if (!response.ok) throw new Error('Google News returned HTTP ' + response.status);
       const bytes = await boundedNewsBytes(response), articles = parseGoogleNewsRss(bytes.toString('utf8'), now());
@@ -197,14 +207,14 @@ export async function fetchPreviewHeadlines(market,{fetcher=fetch,now=Date.now,s
   const series=market?.ticker?.split('-')[0],category=CATEGORIES.find(item=>item.series.includes(series));
   const query=newsQuery(market,category);
   if(!query)return {status:'not_applicable',articles:[]};
-  return filterSportsHeadlines(await fetchRssHeadlines(query,{fetcher,now,state,timeoutMs:3000}),sportsNewsContext(market,category));
+  return filterContractHeadlines(await fetchRssHeadlines(query,{fetcher,now,state,timeoutMs:3000}),market,sportsNewsContext(market,category));
 }
 
 export async function fetchContractHeadlines(market){
   const series=market?.ticker?.split('-')[0],category=CATEGORIES.find(item=>item.series.includes(series));
   const query=newsQuery(market,category);
   const value=await fetchHeadlines(query,{timeoutMs:2500,rssTimeoutMs:3000});
-  return filterSportsHeadlines(value,sportsNewsContext(market,category));
+  return filterContractHeadlines(value,market,sportsNewsContext(market,category));
 }
 
 export async function fetchHeadlines(query, { fetcher = fetch, now = Date.now, state = newsState, timeoutMs=12000, rssTimeoutMs=12000 } = {}) {
@@ -219,7 +229,7 @@ export async function fetchHeadlines(query, { fetcher = fetch, now = Date.now, s
   const task = (async () => {
     try {
       const response = await fetcher(key, { method: 'GET', headers: { Accept: 'application/json',
-        'User-Agent': 'KalshiMarketLab/3.0 headline-metadata-research' }, signal: AbortSignal.timeout(timeoutMs), redirect: 'error', cache: 'no-store' });
+        'User-Agent': 'Predictir/3.0 headline-metadata-research' }, signal: AbortSignal.timeout(timeoutMs), redirect: 'error', cache: 'no-store' });
       if (response.status === 429) { state.retryAt = now() + 600000; throw new Error('GDELT returned HTTP 429; retries paused'); }
       if (!response.ok) throw new Error('GDELT returned HTTP ' + response.status);
       const bytes = await boundedNewsBytes(response), articles = parseHeadlines(JSON.parse(bytes.toString('utf8')), now());
@@ -295,7 +305,7 @@ export async function marketBrief(ticker, options = {}, dependencies = {}) {
       deps.selectedResearch({...market,series},category)) : null,
     newsContext?.unsupported?null:attempt('Headlines', () => deps.headlines(newsQuery(market, category))),
   ]);
-  const news=filterSportsHeadlines(rawNews,newsContext);
+  const news=filterContractHeadlines(rawNews,market,newsContext);
   const profile = profileResult?.data?.series, event = eventResult?.data?.event;
   const row = report?.markets?.find(value => value.ticker === ticker);
   const modeled = validForecast(row);

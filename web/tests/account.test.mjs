@@ -8,9 +8,9 @@ import {applyTestSchema} from './database-fixture.mjs';
 import {setupOwner} from '../tools/setup_owner.mjs';
 
 const secret='fixture-private-session-'.repeat(3),ownerEmail='owner@example.test',ownerId='11111111-1111-4111-8111-111111111111',start=Date.UTC(2026,10,4),empty={version:1,positions:[],trades:[],starting_balance:10000,cash_movements:[]};
-function fixture(options={}){
-  const records=new Map(),calls={login:0,verify:0,refresh:0};let time=start;
-  const user={id:ownerId,email:ownerEmail,email_confirmed_at:new Date(start).toISOString()},session={access_token:'fixture-access-private',refresh_token:'fixture-refresh-private',expires_at:start/1000+3600};
+function fixture(options={},startTime=start){
+  const records=new Map(),calls={login:0,verify:0,refresh:0};let time=startTime;
+  const user={id:ownerId,email:ownerEmail,email_confirmed_at:new Date(startTime).toISOString()},session={access_token:'fixture-access-private',refresh_token:'fixture-refresh-private',expires_at:Math.floor(startTime/1000)+3600};
   const auth={auth:{signInWithPassword:async()=>{calls.login++;return {data:{user,session}};},getUser:async()=>{calls.verify++;return {data:{user}};},refreshSession:async()=>{calls.refresh++;return {data:{session:{...session,access_token:'refreshed-private',expires_at:time/1000+3600}}};}}};
   const storage={consume:async()=>true,get:async key=>records.get(key),save:async value=>{records.set(value.pk,value);},readOwnerPortfolio:async()=>({ledger:empty,watchlist:[],revision:1}),saveOwnerPortfolio:async(_id,input)=>({conflict:false,value:{...input,revision:input.revision+1}})};
   const handler=makeAccountHandler({storage,secret,ownerEmail,authFactory:()=>auth,configured:true,now:()=>time,secure:true,...options});
@@ -131,7 +131,7 @@ test('PostgreSQL owner portfolio CAS prevents lost updates and scopes records by
     assert.deepEqual(await store.readOwnerPortfolio(other),{ledger:null,watchlist:[],revision:0});
     const stale=await store.saveOwnerPortfolio(owner,{ledger:empty,watchlist:[],revision:1});assert.equal(stale.conflict,true);assert.equal(stale.value.revision,2);
     assert.equal((await store.saveOwnerPortfolio(other,{ledger:empty,watchlist:[],revision:2})).conflict,true);
-    const f=fixture({storage:store});f.user.id=randomUUID();const active=cookie(await f.login());
+    const f=fixture({storage:store},Date.now());f.user.id=randomUUID();const active=cookie(await f.login());
     const authenticated=await Promise.all([1,2].map(amount=>f.request('account/portfolio',{method:'PUT',cookie:active,body:{revision:0,watchlist:[],owner_id:other,ledger:{...empty,starting_balance:amount*10000}}})));
     assert.deepEqual(authenticated.map(row=>row.status).sort(),[200,409]);assert.equal((await store.readOwnerPortfolio(f.user.id)).revision,1);assert.equal((await store.readOwnerPortfolio(other)).revision,0);
     const invalid=await f.request('account/portfolio',{method:'PUT',cookie:active,body:{revision:1,watchlist:[],ledger:{...empty,starting_balance:-1}}});assert.equal(invalid.status,400);assert.equal((await store.readOwnerPortfolio(f.user.id)).revision,1);

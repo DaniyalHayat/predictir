@@ -25,13 +25,13 @@ test('shares refreshes, preserves timestamps and drops closed contracts during r
   assert.deepEqual((await catalog('sports')).markets.map(market=>market.ticker),['C']);
 });
 
-test('restores a durable snapshot after restart and stays available through rate limiting',async()=>{
+test('restores a durable snapshot after restart, honors provider backoff and recovers with fresh data',async()=>{
   let now=Date.now(),record,calls=0;
   const row={ticker:'B',close_time:new Date(now+3600000).toISOString()};
   const storage=()=>({get:async()=>record,save:async value=>{record=value;}});
   const options={now:()=>now,storage,load:async()=>{
-    if(++calls===1)return {as_of:new Date(now).toISOString(),markets:[row]};
-    throw Object.assign(new Error('Rate limited'),{retry_after_seconds:60});
+    if(++calls===2)throw Object.assign(new Error('Rate limited'),{retry_after_seconds:60});
+    return {as_of:new Date(now).toISOString(),markets:[{...row,ticker:calls===1?'B':'C'}]};
   }};
   await createCategorySnapshots(options)('sports');
   const restarted=createCategorySnapshots(options);
@@ -43,4 +43,12 @@ test('restores a durable snapshot after restart and stays available through rate
   now+=10000;
   assert.equal((await restarted('sports')).stale,true);
   assert.equal(calls,2);
+  now+=51000;
+  assert.equal((await restarted('sports')).stale,true);
+  await new Promise(resolve=>setImmediate(resolve));
+  const recovered=await restarted('sports');
+  assert.equal(calls,3);
+  assert.equal(recovered.stale,false);
+  assert.equal(recovered.as_of,new Date(now).toISOString());
+  assert.equal(recovered.markets[0].ticker,'C');
 });

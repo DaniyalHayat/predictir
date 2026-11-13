@@ -48,6 +48,18 @@ test('the scoped in-process MCP holds a losing lot using current net bids versus
   assert.equal(result.timings_ms.total,result.duration_ms);
 });
 
+test('position scan revalidates old headline context against the selected measured quantity',async()=>{
+  const {position,dependencies}=setup('KXRAIN-26NOV07-NYC');
+  dependencies.workspaceEvidence=async()=>({ticker:position.ticker,items:[
+    {title:'New York City Christmas tree arrives at Rockefeller Center',url:'https://publisher.test/tree'},
+    {title:'Central Park rain forecast updated by the NWS',url:'https://publisher.test/rain'}
+  ]});
+  const result=await reviewPaperPosition(position,{dependencies});
+  assert.doesNotMatch(JSON.stringify(result),/Christmas tree|publisher\.test\/tree/);
+  assert.ok(result.sources.some(row=>row.url==='https://publisher.test/rain'));
+  assert.match(result.sections.find(row=>row.heading==='Reporting and the next thing to watch').text,/Central Park rain/);
+});
+
 test('SELL requires a released interval below bids and filters recommendations by shared event',async()=>{
   const {position,dependencies}=setup('SELL-REVIEW',{p:.2,interval:[.1,.3]});
   const result=await reviewPaperPosition({...position,automatic:true},{dependencies});
@@ -56,6 +68,20 @@ test('SELL requires a released interval below bids and filters recommendations b
   assert.deepEqual(result.alternatives.map(row=>row.ticker),['IDEA-1','IDEA-2','IDEA-3']);
   assert.equal(result.alternative_coverage.category_count,8);
   assert.deepEqual(result.alternative_coverage.checked_categories,['macro','sports']);
+});
+
+test('replacement scenarios use available paper cash plus executable sale proceeds, capped by the chosen budget',async()=>{
+  const {position,dependencies}=setup('BUDGET-REVIEW',{p:.2,interval:[.1,.3]});
+  let observed;
+  dependencies.recentPositionIdeas=async input=>{observed=input.budget;return {rows:[]};};
+  const result=await localPositionReview({...position,available_cash:.5,alternative_budget:20},{dependencies});
+  assert.equal(result.action,'SELL');
+  assert.ok(Math.abs(observed-(result.evaluation.marked_value+.5))<1e-10);
+  assert.equal(result.alternative_coverage.budget,observed);
+  assert.equal(result.alternative_coverage.budget_source,'available_cash_and_net_exit');
+  assert.match(result.alternative_coverage.scope,/separate alternatives, not three simultaneous allocations/);
+  const limited=await reviewPaperPosition({...position,available_cash:100,alternative_budget:2},{dependencies});
+  assert.equal(observed,2);assert.equal(limited.alternative_coverage.budget,2);
 });
 test('automatic and manual paper scans account for a matched lineup scenario before issuing HOLD',async()=>{
   const {position,dependencies}=setup('KXNBAGAME-26NOV06PORLAL-LAL',{p:.51,interval:[.42,.63]});
@@ -131,7 +157,8 @@ test('flow keeps only recent exact public fills and recognizes partial windows',
 
 test('position route rejects invalid inputs and cross-site requests before touching providers',async()=>{
   const {position}=setup('ROUTE-REVIEW');
-  for(const extra of [{quantity:'10'},{quantity:0},{basis:-1},{shared_quantity:1},{ticker:'../private'},{side:'buy'},{automatic:'yes'}])
+  for(const extra of [{quantity:'10'},{quantity:0},{basis:-1},{shared_quantity:1},{ticker:'../private'},{side:'buy'},{automatic:'yes'},
+    {available_cash:-1},{available_cash:'20'},{alternative_budget:0},{alternative_budget:10001}])
     assert.throws(()=>parsePositionReview({...position,...extra}),RangeError);
   const routeContext={privateRuntime:true,params:Promise.resolve({path:['workspace','position-review']})};
   const response=await POST(new Request('http://localhost/api/workspace/position-review',{method:'POST',headers:{'Content-Type':'application/json'},
@@ -147,7 +174,7 @@ test('the proxy forwards timings, enforces same origin and keeps inputs out of c
   const request=origin=>new Request('https://predictir.dev/api/workspace/position-review',{method:'POST',
     headers:{Origin:origin,'Content-Type':'application/json'},body:'{}'});
   assert.equal((await proxyBackend(request('https://evil.test'),path,{fetcher:()=>assert.fail('cross-site request forwarded')})).status,403);
-  const reply=await proxyBackend(request('https://predictir.dev'),path,{fetcher:async()=>new Response('{}',{headers:{'Server-Timing':'total;dur=620'}})});
+  const reply=await proxyBackend(request('https://predictir.dev'),path,{fetcher:async()=>Response.json({},{headers:{'Server-Timing':'total;dur=620'}})});
   assert.equal(reply.headers.get('server-timing'),'total;dur=620');
   assert.equal(reply.headers.get('cache-control'),'no-store');
 });

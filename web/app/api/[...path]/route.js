@@ -10,13 +10,17 @@ import {cloudEnabled,store} from '../../../lib/cloud/store.mjs';
 import {parseExecutionRequest,workspaceExecutionResearch} from '../../../lib/workspace/execution-service.mjs';
 import {readProxyBody} from '../../../lib/workspace/proxy.mjs';
 import {localPositionReview} from '../../../lib/workspace/mcp.mjs';
+import {shareAccessKind} from '../../../lib/private-access.mjs';
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 export const maxDuration = 800;
 export async function GET(request, context) {
+  const guestOnly=shareAccessKind(request.headers.get('cookie'))==='canary';
   const {path} = await context.params, endpoint = path.join("/"), params = new URL(request.url).searchParams;
-  const proxied=await proxyBackend(request,path);if(proxied)return proxied;
-  if(endpoint==='session'||endpoint.startsWith('account/'))return makeAccountHandler({storage:cloudEnabled()?store():null})(request,endpoint);
+  if(endpoint==='workspace/graphql')return Response.json({errors:[{message:'Use POST for the headline replay operation.'}]},
+    {status:405,headers:{Allow:'POST','Cache-Control':'no-store'}});
+  if(!context.privateRuntime){const proxied=await proxyBackend(request,path);if(proxied)return proxied;}
+  if(endpoint==='session'||endpoint.startsWith('account/'))return makeAccountHandler({storage:!guestOnly&&cloudEnabled()?store():null})(request,endpoint,{guestOnly});
   const vertical = params.get("vertical") || "Macro", ticker = params.get("ticker"), contracts = params.has("contracts") ? Number(params.get("contracts")) : 100;
   const headers = {"Cache-Control":"no-store"};
   try {
@@ -39,21 +43,25 @@ export async function GET(request, context) {
     else if(endpoint==="market") result=await marketDetails(ticker);
     else if(endpoint==="trades") result=await trades(ticker);
     else if(endpoint==="history") result=history(vertical);
-    else if(endpoint==="export.xlsx") return new Response(await workbook(vertical),{headers:{...headers,"Content-Type":"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet","Content-Disposition":"attachment; filename=\"kalshi-live-research.xlsx\""}});
+    else if(endpoint==="export.xlsx") return new Response(await workbook(vertical),{headers:{...headers,"Content-Type":"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet","Content-Disposition":"attachment; filename=\"predictir-market-research.xlsx\""}});
     else return Response.json({error:"Unknown API path"},{status:404,headers});
     return Response.json(result,{headers});
   } catch(error) {
     if(error.upstream_status===429&&Number.isSafeInteger(error.retry_after_seconds)&&error.retry_after_seconds>0){
-      return Response.json({error:error.message,status:"unavailable"},{status:429,headers:{...headers,"Retry-After":String(error.retry_after_seconds)}});
+      return Response.json({error:"The market data source is cooling down. Try again shortly.",status:"unavailable"},{status:429,headers:{...headers,"Retry-After":String(error.retry_after_seconds)}});
     }
-    return Response.json({error:error.message,status:"unavailable"},{status:error.status || (error instanceof RangeError?400:503),headers});
+    return Response.json({error:error instanceof RangeError?error.message:error.status===404?"The selected contract was not found.":"Market data could not be refreshed. Try again shortly.",status:"unavailable"},{status:error.status || (error instanceof RangeError?400:503),headers});
   }
 }
 export async function POST(request,context) {
   const {path}=await context.params,endpoint=path.join("/"),headers={"Cache-Control":"no-store"};
-  const proxied=await proxyBackend(request,path);if(proxied)return proxied;
+  if(!context.privateRuntime){const proxied=await proxyBackend(request,path);if(proxied)return proxied;}
   if(endpoint.startsWith('account/'))return makeAccountHandler({storage:cloudEnabled()?store():null})(request,endpoint);
   try {
+    if(endpoint==='workspace/graphql'){
+      const {headlineReplayGraphQL}=await import('../../../lib/workspace/headline-replay-graphql.mjs');
+      return await headlineReplayGraphQL(request);
+    }
     if(endpoint==='workspace/position-review'){
       if(!(request.headers.get('content-type')||'').toLowerCase().startsWith('application/json'))return Response.json({error:'Use application/json'},{status:415,headers});
       const value=await localPositionReview(JSON.parse(await readProxyBody(request,4000)),{signal:request.signal});
@@ -75,7 +83,9 @@ export async function POST(request,context) {
 }
 export async function PUT(request,context){
   const {path}=await context.params,endpoint=path.join('/');
-  const proxied=await proxyBackend(request,path);if(proxied)return proxied;
+  if(endpoint==='workspace/graphql')return Response.json({errors:[{message:'Use POST for the headline replay operation.'}]},
+    {status:405,headers:{Allow:'POST','Cache-Control':'no-store'}});
+  if(!context.privateRuntime){const proxied=await proxyBackend(request,path);if(proxied)return proxied;}
   if(endpoint==='account/portfolio')return makeAccountHandler({storage:cloudEnabled()?store():null})(request,endpoint);
   return Response.json({error:'Unknown API route'},{status:404});
 }

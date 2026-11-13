@@ -2,11 +2,7 @@
 import {useEffect,useState} from 'react';
 import {ArrowUpRight,Loader2} from 'lucide-react';
 import {cents,dateLabel,dollars,percent} from './api.mjs';
-
-function newsURL(value){
-  try{const url=new URL(value);return url.protocol==='https:'&&!url.username&&!url.password;}
-  catch{return false;}
-}
+import {newsURL} from './news-reading.mjs';
 
 function Stopwatch({started}){
   const [elapsed,setElapsed]=useState(0);
@@ -53,7 +49,7 @@ export default function PositionReview({position,reviews,onOpen}){
           </div>)}
         </div>}
         {value.action==='SELL'&&!value.alternatives?.length&&<p className="footnote">No alternative cleared the available model and execution checks in this scan.</p>}
-        {value.action==='SELL'&&value.alternative_coverage&&<p className="footnote">{value.alternative_coverage.scanned_contracts} priced contracts across a candidate pool covering {value.alternative_coverage.checked_categories?.length||0} of {value.alternative_coverage.category_count} categories. Each setup gets a fresh quote before a paper buy.</p>}
+        {value.action==='SELL'&&value.alternative_coverage&&<p className="footnote">{value.alternative_coverage.scanned_contracts} priced contracts across a candidate pool covering {value.alternative_coverage.checked_categories?.length||0} of {value.alternative_coverage.category_count} categories. {value.alternative_coverage.scope} Each setup gets a fresh quote before a paper buy.</p>}
         {value.sources?.length>0&&<details><summary>Sources</summary><ul>{value.sources.filter(source=>newsURL(source.url)).map((source,index)=>
           <li key={source.url+'-'+index}><a href={source.url} target="_blank" rel="noreferrer">{source.label||'Open source'}</a></li>)}</ul></details>}
         {value.timings_ms&&<details><summary>Scan timings and coverage</summary><dl>{Object.entries(stages).map(([key,label])=>

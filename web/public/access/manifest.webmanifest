@@ -1,0 +1,14 @@
+{
+  "name": "Predictir Access Requests",
+  "short_name": "Predictir",
+  "id": "/access/manage",
+  "start_url": "/access/manage",
+  "scope": "/access/",
+  "display": "standalone",
+  "theme_color": "#080808",
+  "background_color": "#080808",
+  "icons": [
+    {"src":"/access/icon-192.png","sizes":"192x192","type":"image/png"},
+    {"src":"/access/icon-512.png","sizes":"512x512","type":"image/png"}
+  ]
+}

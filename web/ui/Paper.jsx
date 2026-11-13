@@ -9,7 +9,7 @@ import usePaperLedger from './usePaperLedger.jsx';
 import PaperCash from './PaperCash.jsx';
 import {emitAnalytics} from '../app/components/analytics-policy.mjs';
 import {attachEntryContext} from './paper-state.mjs';
-export default function Paper({market,book,forecast,fees,now=Date.now(),preset,onPortfolio}) {
+export default function Paper({market,book,forecast,fees,now=Date.now(),preset,onPortfolio,assistantAction}) {
   const {engine,ledger,bankroll,adjustCash,commit,storageError,retry,retrying}=usePaperLedger();
   const [budget,setBudget]=useState(25),
     [low,setLow]=useState(''),[point,setPoint]=useState(''),[high,setHigh]=useState(''),[side,setSide]=useState('yes'),[quantity,setQuantity]=useState(10),
@@ -70,7 +70,7 @@ export default function Paper({market,book,forecast,fees,now=Date.now(),preset,o
       body:JSON.stringify({ticker:market.ticker,probability:Number(point)/100,probability_low:Number(low)/100,probability_high:Number(high)/100})});setMessage('Forecast registered. It will be scored after the exchange reports a binary settlement.');}
     catch(e){setError(e.message);}finally{acting.current=false;setBusy(false);}
   }
-  return <div className="paper-panel"><div className="section-title"><h3>Paper position</h3><button className="text-button" onClick={onPortfolio}>Live portfolio</button></div><p className="muted">Set a probability range, inspect the size and record a paper entry against fresh depth.</p>
+  return <div className="paper-panel"><div className="section-title"><h3>Paper position</h3><div className="contract-links">{assistantAction}<button className="text-button" onClick={onPortfolio}>Live portfolio</button></div></div><p className="muted">Set a probability range, inspect the size and record a paper entry against fresh depth.</p>
     {forecast?.experimental&&<p className="notice experimental-note">Experimental model scenario selected. Its promotion gate remains separate from this manual paper setup.</p>}
     <PaperCash compact capital={capital} ledger={ledger} onAdjust={adjustCash}/>
     <div className="field-grid"><label>Maximum entry loss, $<input type="number" min="0.01" step="1" value={budget} onChange={e=>setBudget(e.target.value)}/></label><div className="field-action"><p className="muted">Includes contract cost and modeled fees.</p></div></div>
@@ -86,7 +86,7 @@ export default function Paper({market,book,forecast,fees,now=Date.now(),preset,o
     <div className="toolbar"><button className="primary" disabled={!engine||!book||busy||!canEnter||!capital?.available} onClick={open}>{busy?'Checking…':'Record paper buy'}</button><button className="secondary" disabled={!validForecast||busy||!canEnter} onClick={freeze}>Register forecast</button></div>
     <p className="footnote">Fee coefficient {coefficient.toFixed(4)}{verifiedFee?' from series metadata':' is a general assumption'}. Entry is limited to observed asks within 2¢. Available cash includes recorded closes, settlement and fees. Paper money is simulated.</p>
     {storageError&&<p className="notice error" role="alert">{storageError}<button className="text-button" disabled={retrying} onClick={retry}>{retrying?'Reconnecting…':'Retry paper account'}</button></p>}{message&&<p className="notice success" role="status">{message}<button className="text-button" onClick={onPortfolio}>View performance</button></p>}{error&&<p className="notice error" role="alert">{error}</p>}
-    <div className="section-title"><h3>Paper ledger</h3><button className="text-button" disabled={!ledger} onClick={()=>exportJSON(ledger,'kalshi-paper-ledger.json')}><Download size={14}/>Export</button></div>
+    <div className="section-title"><h3>Paper ledger</h3><button className="text-button" disabled={!ledger} onClick={()=>exportJSON(ledger,'predictir-paper-ledger.json')}><Download size={14}/>Export</button></div>
     {ledger?.positions.length?<div className="table-scroll"><table><thead><tr><th>Position</th><th>Open contracts</th><th>Open basis</th><th>Realized P/L</th><th/></tr></thead><tbody>{ledger.positions.map(p=><tr key={p.id}><td><strong>{p.side.toUpperCase()}</strong><small>{p.title||p.ticker}</small></td><td>{count(p.remaining_quantity)}</td><td>{dollars(p.remaining_basis)}</td><td>{dollars(p.realized_pnl)}</td><td>{p.remaining_quantity>0&&<button className="text-button" disabled={busy} onClick={()=>close(p)}>Close at bids</button>}</td></tr>)}</tbody></table></div>:<p className="empty">No paper positions yet.</p>}
   </div>;
 }

@@ -151,3 +151,4 @@ public/lab* text eol=lf
 public/risk-client.js text eol=lf
 public/favicon.ico -filter -diff -merge -text
 public/favicon.png -filter -diff -merge -text
+public/access/*.png -filter -diff -merge -text

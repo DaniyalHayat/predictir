@@ -1,5 +1,5 @@
 {
-  "name": "kalshi-live-figma",
+  "name": "predictir-web",
   "private": true,
   "version": "1.0.0",
   "type": "module",
@@ -24,26 +24,35 @@
     "@aws-sdk/lib-dynamodb": "3.1161.0",
     "@huggingface/transformers": "4.3.2",
     "@modelcontextprotocol/sdk": "1.32.2",
-    "@payloadcms/db-sqlite": "3.92.1",
     "@supabase/supabase-js": "2.118.0",
     "ai": "7.0.162",
     "exceljs": "4.4.0",
+    "graphql": "16.14.2",
     "lucide-react": "1.68.0",
+    "maxmind": "5.0.8",
     "next": "16.4.3",
-    "payload": "3.92.1",
+    "parse5": "8.1.0",
     "pdf-lib": "1.17.1",
     "pg": "8.23.1",
     "react": "19.2.3",
     "react-dom": "19.2.3",
     "uplot": "1.6.32",
+    "web-push": "4.0.0",
     "ws": "8.22.1",
     "zod": "4.6.7"
   },
+  "overrides": {
+    "exceljs": {
+      "uuid": "11.1.1"
+    }
+  },
   "devDependencies": {
+    "@payloadcms/db-sqlite": "3.92.1",
     "@types/node": "22.19.1",
     "@types/react": "19.2.2",
     "@types/react-dom": "19.2.2",
     "esbuild": "0.28.2",
+    "payload": "3.92.1",
     "tsx": "4.20.6",
     "typescript": "5.9.3"
   }

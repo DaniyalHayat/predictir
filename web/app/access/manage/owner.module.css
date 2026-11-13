@@ -1,0 +1,18 @@
+.shell{min-height:100dvh;display:grid;place-items:start center;background:#080808;color:#f5f5f5;padding:clamp(16px,5vw,48px);font-family:Arial,sans-serif}
+.card{width:min(100%,38rem);box-sizing:border-box;background:#111;border:1px solid #303030;border-radius:18px;padding:clamp(20px,5vw,32px)}
+.card h1{font-size:clamp(28px,6vw,38px);letter-spacing:-1px;margin:14px 0 20px}
+.card p{color:#c5c5c5;line-height:1.55}
+.card p:empty{margin:0}
+.brand{color:#c5c5c5;font-size:14px;text-underline-offset:4px}
+.form{display:grid;gap:10px}
+.card input,.card button{font:inherit;min-height:44px;border-radius:8px;border:1px solid #4a4a4a;padding:8px 12px;box-sizing:border-box}
+.card input{width:100%;color:inherit;background:#191919}
+.card button{background:#212121;color:inherit;cursor:pointer}
+.card button:hover:not(:disabled){background:#333}
+.card button:disabled{opacity:.6;cursor:default}
+.card :is(button,input,a):focus-visible{outline:2px solid #a6d4ff;outline-offset:3px}
+.tools{display:flex;gap:8px;flex-wrap:wrap}
+.list{display:grid;gap:12px;list-style:none;padding:0}
+.list li{padding:14px;border:1px solid #303030;border-radius:10px;overflow-wrap:anywhere}
+.list span{display:block;color:#c5c5c5;margin:4px 0 12px}
+.card .approve,.card .approve:hover:not(:disabled){background:#dcf0ff;color:#102439;border-color:#dcf0ff}

@@ -1,12 +1,12 @@
 import { createHash } from "node:crypto";
 import fredSnapshot from "./data/fred-snapshot.json" with {type:"json"};
+import {htmlDocument,htmlElements,htmlNodeText} from '../runtime/html-text.mjs';
+import {DAY,isoDay,monthNumber} from './time.mjs';
+export {DAY,isoDay,monthNumber} from './time.mjs';
 
 const hosts = new Set(["www.tsa.gov","fred.stlouisfed.org","api.weather.gov","api.coinbase.com","api.exchange.coinbase.com","mesonet.agron.iastate.edu"]);
 const state = globalThis[Symbol.for("kalshi.independent.sources.v1")] ||= {cache:new Map(),inflight:new Map()};
 state.failures ||= new Map();
-export const DAY = 86400000;
-export const isoDay = value => new Date(value).toISOString().slice(0,10);
-export const monthNumber = date => Number(date.slice(0,4))*12+Number(date.slice(5,7))-1;
 
 export async function sourceText(url, ttl = 300000, fetcher = fetch) {
   const parsed = new URL(url);
@@ -17,7 +17,7 @@ export async function sourceText(url, ttl = 300000, fetcher = fetch) {
   if(failed && Date.now()-failed.at<60000)throw new Error(failed.message);
   if (state.inflight.has(url)) return state.inflight.get(url);
   const task = (async()=>{
-    const response = await fetcher(url, {headers:{Accept:"application/json,text/csv,text/html", "User-Agent":"KalshiMarketLab/3.0 (read-only quantitative research)"},signal:AbortSignal.timeout(16000),redirect:"error",cache:"no-store"});
+    const response = await fetcher(url, {headers:{Accept:"application/json,text/csv,text/html", "User-Agent":"Predictir/3.0 (read-only quantitative research)"},signal:AbortSignal.timeout(16000),redirect:"error",cache:"no-store"});
     if (!response.ok) throw new Error(`${parsed.hostname} returned HTTP ${response.status}`);
     if (Number(response.headers.get("content-length")) > 6000000) throw new Error("Source response too large");
     const reader = response.body.getReader(), parts = [];
@@ -52,9 +52,9 @@ const provenance = (response, name, rows, unit, extra={}) => ({
 
 export function parseTsa(html, now = Date.now()) {
   const rows = new Map();
-  for (const table of html.matchAll(/<table\b[^>]*>([\s\S]*?)<\/table>/gi)) {
-    for (const match of table[1].matchAll(/<tr\b[^>]*>([\s\S]*?)<\/tr>/gi)) {
-      const cells = [...match[1].matchAll(/<t[dh]\b[^>]*>([\s\S]*?)<\/t[dh]>/gi)].map(cell=>cell[1].replace(/<[^>]*>/g,"").replace(/&nbsp;|&#160;/g," ").trim());
+  for (const table of htmlElements(htmlDocument(html),'table')) {
+    for (const row of htmlElements(table,'tr')) {
+      const cells=(row.childNodes||[]).filter(cell=>['td','th'].includes(cell.tagName)).map(cell=>htmlNodeText(cell,100));
       const date = cells[0]?.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
       if (!date || !/^[\d,]+$/.test(cells[1] || "")) continue;
       const day = `${date[3]}-${date[1].padStart(2,"0")}-${date[2].padStart(2,"0")}`, value = Number(cells[1].replaceAll(",",""));
