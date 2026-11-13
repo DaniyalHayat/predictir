@@ -77,7 +77,7 @@ export async function proxyBackend(request,path,{fetcher=fetch,jsonTimeoutMs=JSO
     const result=await fetcher(url,{method:request.method,headers,body,redirect:'error',cache:'no-store',signal:AbortSignal.any([request.signal,streaming?upstream.signal:AbortSignal.timeout(positionReview?Math.min(jsonTimeoutMs,7600):jsonTimeoutMs)])});
     clearTimeout(connectTimer);
     const type=result.headers.get('content-type')||'';
-    if(/text\/html/i.test(type)){upstream?.abort();await result.body?.cancel();return unavailableResponse(502,'The data service returned a web page instead of data. Try again shortly.');}
+    if(/text\/html/i.test(type)){upstream?.abort();try{await result.body?.cancel();}catch{}return unavailableResponse(502,'The data service returned a web page instead of data. Try again shortly.');}
     const outputHeaders={'Cache-Control':'no-store','Content-Type':result.headers.get('content-type')||'application/json','X-Content-Type-Options':'nosniff',traceparent:trace.traceparent};
     if(result.headers.has('retry-after'))outputHeaders['Retry-After']=result.headers.get('retry-after');
     if(positionReview&&result.headers.has('server-timing'))outputHeaders['Server-Timing']=result.headers.get('server-timing');
