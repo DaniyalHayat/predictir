@@ -17,7 +17,7 @@ const markets=[
 ].map(market=>({...market,category:'sports',status:'active',yes_ask:.4,yes_bid:.35,close_time,volume_24h:100}));
 const book=ticker=>({ticker,as_of,raw:{orderbook_fp:{yes_dollars:[['.35','100']],no_dollars:[['.60','100']]}}});
 const reporting=(title,publisher,url,excerpt)=>({title,publisher,url,excerpt,as_of,match_scope:'matched',why_relevant:'Names Alpha and the exact fixture.',impact:'Check the final lineup before using this report.'});
-const events=[],payloads=[];
+const events=[],payloads=[],contractRequests=[];
 const news=ticker=>({ticker,as_of,items:[
   reporting('Starter cleared','League report','https://league.example/lineup','Alpha’s starter has been cleared for this fixture.'),
   reporting('Tracked duplicate','Mirror','https://league.example/lineup?utm_source=repeat','This duplicate should disappear.'),
@@ -31,6 +31,9 @@ await context.route('**/*',async route=>{
   if(url.origin!==local.origin)return route.abort();
   if(!url.pathname.startsWith('/api/'))return route.continue();
   const ticker=url.searchParams.get('ticker')||markets[0].ticker;
+  if(['/api/workspace/context','/api/workspace/history','/api/workspace/research','/api/book','/api/stream'].includes(url.pathname)){
+    contractRequests.push({ticker,path:url.pathname});
+  }
   const market=markets.find(row=>row.ticker===ticker)||markets[0];
   const json=value=>route.fulfill({json:value});
   if(url.pathname==='/api/session')return json({kind:'guest',guest:{id:'browser-qa',created_at:as_of,last_active_at:as_of,expires_at:close_time}});
@@ -79,6 +82,29 @@ await context.route('**/*',async route=>{
 let page;
 const errors=[];
 try{
+  const quickSwitch=await context.newPage();
+  try{
+    await quickSwitch.addInitScript(()=>{
+      const observer=new MutationObserver(()=>{
+        const selected=document.querySelector('[data-testid="selected-ticker"]');
+        const next=document.querySelector('[data-market-ticker="KXTEST-BETA"] .market-select');
+        if(selected?.textContent!=='KXTEST-ALPHA'||!next)return;
+        observer.disconnect();
+        setTimeout(()=>next.click(),50);
+      });
+      observer.observe(document,{childList:true,subtree:true});
+    });
+    const quote=quickSwitch.waitForResponse(response=>{
+      const url=new URL(response.url());
+      return url.pathname==='/api/book'&&url.searchParams.get('ticker')==='KXTEST-BETA'&&response.ok();
+    });
+    await quickSwitch.goto(local.href);
+    await quote;
+    await quickSwitch.getByTestId('selected-ticker').filter({hasText:'KXTEST-BETA'}).waitFor();
+    assert.deepEqual(contractRequests.filter(row=>row.ticker==='KXTEST-ALPHA'),[],
+      'A quick selection should cancel provisional contract work before sending requests');
+  }finally{await quickSwitch.close();}
+  contractRequests.length=0;
   page=await context.newPage();
   page.setDefaultTimeout(15000);
   page.on('pageerror',error=>errors.push(error.message));
@@ -102,6 +128,9 @@ try{
     return payload;
   };
   assert.equal(await page.getByTestId('selected-title').textContent(),'Alpha kickoff');
+  await page.locator('.quote-strip .yes-price').filter({hasText:'40¢'}).waitFor();
+  assert.ok(contractRequests.some(row=>row.ticker==='KXTEST-ALPHA'&&row.path==='/api/book'),
+    'The default contract loads a quote when it stays selected');
   await ask('Ask why about exchange price history','history');
   await page.getByRole('tab',{name:'Analysis'}).click();
   const analysisMode=page.getByRole('group',{name:'Contract analysis reading length'});

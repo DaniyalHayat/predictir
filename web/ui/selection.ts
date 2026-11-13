@@ -35,6 +35,7 @@ export type Selection = Readonly<{
   ticker: string | null;
   generation: number;
   market: Market | null;
+  provisional: boolean;
   book: Book | null;
   research: Research | null;
   fees: Fees | null;
@@ -43,14 +44,15 @@ export type Selection = Readonly<{
 }>;
 export type SelectionAction =
   | {type: 'clear'}
-  | {type: 'select'; market: Market}
+  | {type: 'select'; market: Market; provisional?: boolean}
+  | (Scoped & {type: 'activate'})
   | (Scoped & {type: 'error'; error: string})
   | (Scoped & {type: 'context'; value: {market?: Market | null; fees?: Fees | null}})
   | (Scoped & {type: 'book'; value: Book})
   | (Scoped & {type: 'research'; value: Research});
 
 export const initialSelection: Selection = Object.freeze({
-  ticker: null, generation: 0, market: null, book: null, research: null, fees: null, loading: false, error: null
+  ticker: null, generation: 0, market: null, provisional: false, book: null, research: null, fees: null, loading: false, error: null
 });
 
 export function contractTitle(market?: ContractLabel | null): string {
@@ -76,8 +78,9 @@ export function refreshMarketRows<T extends Ticker>(current: readonly T[], incom
 export function selectionReducer(state: Selection, action: SelectionAction): Selection {
   if (action.type === 'clear') return {...initialSelection, generation: state.generation + 1};
   if (action.type === 'select') return {...initialSelection, ticker: action.market.ticker, market: action.market,
-    generation: state.generation + 1, loading: true};
+    generation: state.generation + 1, provisional: action.provisional === true, loading: true};
   if (action.generation !== state.generation || action.ticker !== state.ticker) return state;
+  if (action.type === 'activate') return state.provisional ? {...state, provisional: false} : state;
   if (action.type === 'error') return {...state, loading: false, error: action.error};
   if (action.type === 'context') {
     const {market, fees} = action.value;

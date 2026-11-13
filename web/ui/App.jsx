@@ -31,6 +31,7 @@ const Journal=dynamic(()=>import('./Journal.jsx'));
 const Assistant=dynamic(()=>import('./Assistant'),{loading:()=> <aside className="assistant-panel" role="status"><div className="assistant-heading"><Loader2 size={16} className="spin"/> Opening Ask Why…</div></aside>});
 const Account=dynamic(()=>import('./Account.jsx'));
 const marketPageSize=48;
+const autoSelectionDelayMs=400;
 const noPositions=[];
 
 const categories=[['sports','Sports',Trophy],['macro','Economy',Landmark],['crypto','Crypto',Bitcoin],['travel','Travel',Plane],
@@ -179,7 +180,7 @@ export default function App({paperWorkspace=false}={}) {
   const [category,setCategory]=useState('sports'),[markets,setMarkets]=useState([]),[query,setQuery]=useState(''),[listLabel,setListLabel]=useState('Sports'),
     [listLoading,setListLoading]=useState(true),[listError,setListError]=useState(''),[coverage,setCoverage]=useState(null),[rowLimit,setRowLimit]=useState(marketPageSize),
     [selection,dispatch]=useReducer(selectionReducer,initialSelection),[history,setHistory]=useState(null),[tab,setTab]=useState('overview'),
-    [researchLoading,setResearchLoading]=useState(false),[streamStatus,setStreamStatus]=useState('Connecting'),[paused,setPaused]=useState(false),
+    [researchPending,setResearchLoading]=useState(false),[streamStatus,setStreamStatus]=useState('Connecting'),[paused,setPaused]=useState(false),
     [assistant,setAssistant]=useState(false),[journal,setJournal]=useState(false),[sources,setSources]=useState(false),[sourceStatus,setSourceStatus]=useState(null),[attribution,setAttribution]=useState(null),
     [mobileDetail,setMobileDetail]=useState(false),[clock,setClock]=useState(Date.now()),[listRevision,setListRevision]=useState(0),
     [view,setView]=useState('markets'),[preferences,setPreferences]=useState(DEFAULT_PREFERENCES),[appearanceOpen,setAppearanceOpen]=useState(false),
@@ -191,7 +192,8 @@ export default function App({paperWorkspace=false}={}) {
   const reviews=usePositionReviews(paperLedger.ledger?.positions||noPositions,preferences.model,paperLedger);
   const activeView=useRef(view);activeView.current=view;
   const closed=Boolean(selection.market&&(['closed','settled','finalized'].includes(selection.market.status)||Date.parse(selection.market.close_time)<=clock));
-  const select=useCallback((market,{openDetail=true}={})=>{listIntent.current++;dispatch({type:'select',market});setAssistant(false);setHistory(null);setTab('overview');setPaused(false);setMobileDetail(openDetail);},[]);
+  const researchLoading=selection.provisional||researchPending;
+  const select=useCallback((market,{openDetail=true,provisional=false}={})=>{listIntent.current++;dispatch({type:'select',market,provisional});setAssistant(false);setHistory(null);setTab('overview');setStreamStatus('Loading quote');setPaused(false);setMobileDetail(openDetail);},[]);
   const openMarket=useCallback(market=>{setView('markets');setPaperPreset(null);select(market);},[select]);
   const selectResearch=useCallback(market=>{openMarket(market);setTab('research');},[openMarket]);
   function changeCategory(id){setMobileDetail(false);if(view==='portfolio')setView('markets');if(id===category)return;lookupRequest.current?.abort();listIntent.current++;dispatch({type:'clear'});setHistory(null);setCoverage(null);setResearchLoading(false);setAssistant(false);setPaperPreset(null);setMarkets([]);setQuery('');setRowLimit(marketPageSize);setCategory(id);}
@@ -204,7 +206,7 @@ export default function App({paperWorkspace=false}={}) {
     setListLoading(true);setListError('');setListLabel(categories.find(c=>c[0]===category)[1]);
     api('/api/workspace/markets?category='+category,{signal:controller.signal,timeoutMs:20000}).then(value=>{
       if(controller.signal.aborted||intent!==listIntent.current)return;
-      setMarkets(value.markets);setCoverage(value);if(value.markets.length&&!keepSelection)select(value.markets[0],{openDetail:false});
+      setMarkets(value.markets);setCoverage(value);if(value.markets.length&&!keepSelection)select(value.markets[0],{openDetail:false,provisional:true});
     }).catch(e=>{if(e.name!=='AbortError'&&!controller.signal.aborted)setListError(e.message);}).finally(()=>{if(!controller.signal.aborted)setListLoading(false);});
     return()=>controller.abort();
   },[category,listRevision]);
@@ -212,13 +214,19 @@ export default function App({paperWorkspace=false}={}) {
     if(view!=='markets'||listLoading||listLabel==='Opened from link')return;
     const controller=new AbortController();let busy=false;
     const refresh=async()=>{if(document.hidden||busy)return;busy=true;const intent=listIntent.current;
-      try{const value=await api('/api/workspace/markets?category='+category,{signal:controller.signal,timeoutMs:20000});if(!controller.signal.aborted&&intent===listIntent.current){setMarkets(current=>refreshMarketRows(current,value.markets));setCoverage(value);setListError('');if(!selection.ticker&&value.markets.length)select(value.markets[0],{openDetail:false});}}
+      try{const value=await api('/api/workspace/markets?category='+category,{signal:controller.signal,timeoutMs:20000});if(!controller.signal.aborted&&intent===listIntent.current){setMarkets(current=>refreshMarketRows(current,value.markets));setCoverage(value);setListError('');if(!selection.ticker&&value.markets.length)select(value.markets[0],{openDetail:false,provisional:true});}}
       catch{}finally{busy=false;}};
     const timer=setInterval(refresh,coverage?.stale?8000:listError?30000:60000);document.addEventListener('visibilitychange',refresh);
     return()=>{controller.abort();clearInterval(timer);document.removeEventListener('visibilitychange',refresh);};
   },[category,view,listLoading,listLabel,coverage?.stale,listError,selection.ticker,select]);
   useEffect(()=>{
-    if(!selection.ticker||view!=='markets')return;
+    const {ticker,generation,provisional}=selection;
+    if(!ticker||!provisional||view!=='markets')return;
+    const timer=setTimeout(()=>dispatch({type:'activate',ticker,generation}),autoSelectionDelayMs);
+    return()=>clearTimeout(timer);
+  },[selection.ticker,selection.generation,selection.provisional,view]);
+  useEffect(()=>{
+    if(!selection.ticker||selection.provisional||view!=='markets')return;
     const {ticker,generation}=selection,controller=new AbortController();setResearchLoading(true);setStreamStatus('Loading quote');
     let running=false,lastRequest=0,lastFull=0,lastHistory=0,previous=null,pendingEvidenceRefresh=false;
     const options={signal:controller.signal};
@@ -240,9 +248,9 @@ export default function App({paperWorkspace=false}={}) {
     const refreshIfDue=()=>{refreshHistory();if(Date.now()-lastRequest>=researchRefreshDelay(previous))refreshResearch(Date.now()-lastFull<300000);};
     refreshResearch();const timer=setInterval(refreshIfDue,20000);document.addEventListener('visibilitychange',refreshIfDue);
     return()=>{refreshAfterEvidence.current=null;controller.abort();clearInterval(timer);document.removeEventListener('visibilitychange',refreshIfDue);};
-  },[selection.ticker,selection.generation,view,preferences.model]);
+  },[selection.ticker,selection.generation,selection.provisional,view,preferences.model]);
   useEffect(()=>{
-    if(!selection.ticker||paused||closed||view!=='markets')return;const {ticker,generation}=selection;let stream,stopped=false,retryTimer,retries=0,lastPoll=0;
+    if(!selection.ticker||selection.provisional||paused||closed||view!=='markets')return;const {ticker,generation}=selection;let stream,stopped=false,retryTimer,retries=0,lastPoll=0;
     const controller=new AbortController();
     const receive=value=>{if(!stopped)dispatch({type:'book',ticker,generation,value});};
     const refresh=()=>{if(!document.hidden&&!stopped&&(!stream||Date.now()-lastPoll>45000))api('/api/book?ticker='+encodeURIComponent(ticker)+'&contracts=1',{signal:controller.signal}).then(value=>{receive({...value,transport:'public-rest-snapshot'});if(!stream)setStreamStatus('REST snapshot');}).catch(e=>{if(e.name!=='AbortError'&&!stopped)setStreamStatus('Quote unavailable');});};
@@ -257,7 +265,7 @@ export default function App({paperWorkspace=false}={}) {
     const visible=()=>{if(document.hidden){stream?.close();stream=null;clearTimeout(retryTimer);}else{refresh();connect();}};
     document.addEventListener('visibilitychange',visible);
     return()=>{stopped=true;controller.abort();stream?.close();clearInterval(interval);clearTimeout(retryTimer);document.removeEventListener('visibilitychange',visible);};
-  },[selection.ticker,selection.generation,paused,closed,view]);
+  },[selection.ticker,selection.generation,selection.provisional,paused,closed,view]);
   async function lookup(event){event.preventDefault();if(!/^https:\/\/|^[A-Z0-9_.]+-[A-Z0-9_.-]+$/i.test(query.trim()))return;
     lookupRequest.current?.abort();const controller=new AbortController(),intent=++listIntent.current;lookupRequest.current=controller;
     setListLoading(true);setListError('');dispatch({type:'clear'});setHistory(null);
