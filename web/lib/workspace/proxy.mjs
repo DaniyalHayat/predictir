@@ -11,13 +11,13 @@ function unavailableResponse(status=503,error='The data service is temporarily u
 }
 async function readUpstreamBody(result){
   if(!result.body)return null;
-  if(Number(result.headers.get('content-length'))>UPSTREAM_MAX_BYTES){await result.body.cancel();throw new Error('Upstream response exceeds the limit');}
+  if(Number(result.headers.get('content-length'))>UPSTREAM_MAX_BYTES){void result.body.cancel().catch(()=>{});throw new Error('Upstream response exceeds the limit');}
   const reader=result.body.getReader(),chunks=[];let size=0;
   try{
     while(true){
       const {value,done}=await reader.read();if(done)break;
       size+=value.byteLength;
-      if(size>UPSTREAM_MAX_BYTES){await reader.cancel();throw new Error('Upstream response exceeds the limit');}
+      if(size>UPSTREAM_MAX_BYTES){void reader.cancel().catch(()=>{});throw new Error('Upstream response exceeds the limit');}
       chunks.push(value);
     }
   }finally{reader.releaseLock();}
@@ -118,20 +118,27 @@ export async function proxyBackend(request,path,{fetcher=fetch,jsonTimeoutMs=JSO
     if(!Number.isSafeInteger(jsonTimeoutMs)||jsonTimeoutMs<1||jsonTimeoutMs>JSON_TIMEOUT_MS)throw new RangeError('Invalid data deadline');
     const timeout=Math.min(jsonTimeoutMs,positionReview?7600:headlineReplay?HEADLINE_REPLAY_TIMEOUT_MS+3000:JSON_TIMEOUT_MS);
     const result=await fetcher(url,{method:request.method,headers,body,redirect:'error',cache:'no-store',signal:AbortSignal.any([request.signal,streaming?upstream.signal:AbortSignal.timeout(timeout)])});
-    clearTimeout(connectTimer);
     const type=result.headers.get('content-type')||'';
-    if(/text\/html/i.test(type)){upstream?.abort();try{await result.body?.cancel();}catch{}return unavailableResponse(502,'The data service returned a web page instead of data. Try again shortly.');}
+    if(/text\/html/i.test(type)){
+      upstream?.abort();void result.body?.cancel().catch(()=>{});
+      return unavailableResponse(502,'The data service returned a web page instead of data. Try again shortly.');
+    }
     const outputHeaders={'Cache-Control':'no-store','Content-Type':result.headers.get('content-type')||'application/json','X-Content-Type-Options':'nosniff',traceparent:trace.traceparent};
     if(result.headers.has('retry-after'))outputHeaders['Retry-After']=result.headers.get('retry-after');
     if(positionReview&&result.headers.has('server-timing'))outputHeaders['Server-Timing']=result.headers.get('server-timing');
-    if(streaming)outputHeaders['X-Accel-Buffering']='no';
-    let outputBody=result.body;
-    if(streaming){
-      if(/text\/event-stream/i.test(type))outputBody=relayEventStream(result.body,{requestSignal:request.signal,abortUpstream:()=>upstream.abort(),lifetimeMs:streamLifetimeMs,
+    let outputBody;
+    if(streaming&&result.ok){
+      if(!result.body||!/^text\/event-stream\s*(?:;|$)/i.test(type)){
+        upstream.abort();void result.body?.cancel().catch(()=>{});
+        return unavailableResponse(502,'The data service did not return an event stream. Try again shortly.');
+      }
+      clearTimeout(connectTimer);
+      outputHeaders['X-Accel-Buffering']='no';
+      outputBody=relayEventStream(result.body,{requestSignal:request.signal,abortUpstream:()=>upstream.abort(),lifetimeMs:streamLifetimeMs,
         onUnexpectedError:()=>onStreamError({route,error_code:'UPSTREAM_STREAM_INTERRUPTED',trace_id:trace.traceId})});
-      else{connectTimer=setTimeout(()=>upstream.abort(),streamLifetimeMs);outputBody=result.body===null?null:await result.arrayBuffer();upstream.abort();}
     }else{
       outputBody=await readUpstreamBody(result);
+      upstream?.abort();
       if(outputBody&&route!=='/export.xlsx'){
         if(!/application\/(?:[\w.+-]+\+)?json\b/i.test(type))return unavailableResponse(502,'The data service returned an unexpected response. Try again shortly.');
         try{JSON.parse(outputBody.toString('utf8'));}catch{return unavailableResponse(502,'The data service returned incomplete data. Try again shortly.');}

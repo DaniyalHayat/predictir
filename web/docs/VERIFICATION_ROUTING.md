@@ -6,7 +6,7 @@ The Vercel project root is `web`. Next.js serves `public/google7653305cfae6f81b.
 
 The root layout retains the Google-issued homepage meta value `FCoPfWp2NwEtKCMJq_AW6Cx2itHdrAZcG9PkS0PdpFQ`. The standalone `/lab.html` also includes the requested filename-derived value `google7653305cfae6f81b`. These are different values: the latter must not replace the Google-issued homepage token. Adding a tag to `/lab.html` does not establish homepage verification on its own.
 
-All paths already receive `X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY`, and `Referrer-Policy: strict-origin-when-cross-origin`, in addition to CSP and HSTS. Keep these protections enabled.
+The shared response headers include `X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY`, and `Referrer-Policy: no-referrer`, along with CSP and HSTS.
 
 ## Backend startup and timeouts
 
@@ -16,6 +16,6 @@ The catch-all API handler delegates to `lib/workspace/proxy.mjs`. A configured b
 - Non-streaming responses finish reading before downstream success headers are committed. Network failures and timeouts, including failures after headers arrive, return sanitized JSON with HTTP 503, `status: unavailable`, `Cache-Control: no-store` and `Retry-After: 5`.
 - HTML gateway/warmup responses become JSON HTTP 502 with the same retry guidance. Valid backend statuses and `Retry-After` values are preserved.
 - Writes are not automatically retried: a timeout does not prove the backend failed to commit a write.
-- SSE still has its separate five-second connect deadline and 750-second clean rotation; ordinary JSON buffering does not buffer SSE.
+- SSE uses a five-second handshake and 750-second rotation by default (12 and 210 seconds in the live Azure edition). An upstream success must contain an event stream. JSON error bodies must finish within the handshake deadline and share the ordinary response size limit. Valid streams are relayed as they arrive.
 
 The tests simulate startup stalls before headers and during body delivery using a local HTTP server. These simulations do not establish actual provider cold-start latency. Production Google verification and HTTP accessibility still require an external check; a READY deployment alone is not an HTTP 200 assertion.

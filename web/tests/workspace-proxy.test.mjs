@@ -145,6 +145,43 @@ test('SSE connection timeouts finish before headers and non-SSE errors retain th
   assert.equal(denied.status,429);assert.equal(denied.headers.get('retry-after'),'15');assert.deepEqual(await denied.json(),{error:'Stream capacity reached'});
 });
 
+test('both stream routes preserve HTML gateway errors when abort rejects body cleanup',async t=>{
+  environment(t);
+  for(const path of [['stream'],['portfolio','stream']]){
+    const response=await proxyBackend(new Request('https://predictir.dev/api/'+path.join('/'),{headers}),path,{fetcher:async (url,{signal})=>{
+      const body=new ReadableStream({start(controller){
+        signal.addEventListener('abort',()=>controller.error(signal.reason),{once:true});
+      }});
+      return new Response(body,{headers:{'Content-Type':'text/html'}});
+    }});
+    assert.equal(response.status,502);
+    assert.equal(response.headers.get('retry-after'),'5');
+    assert.match((await response.json()).error,/web page/);
+  }
+});
+
+test('stream handshakes reject non-SSE success and bound invalid or stalled error bodies',async t=>{
+  environment(t);
+  const request=new Request('https://predictir.dev/api/stream',{headers});
+  const call=fetcher=>proxyBackend(request,['stream'],{fetcher,streamConnectTimeoutMs:50});
+  const unexpected=await call(async()=>Response.json({ok:true}));
+  assert.equal(unexpected.status,502);
+  assert.match((await unexpected.json()).error,/event stream/);
+  const oversized=await call(async()=>new Response('too large',{status:503,
+    headers:{'Content-Type':'application/json','Content-Length':String(9*1024*1024)}}));
+  assert.equal(oversized.status,503);
+  assert.equal(oversized.headers.get('retry-after'),'5');
+  const unexpectedType=await call(async()=>new Response('unexpected',{status:503,headers:{'Content-Type':'text/event-stream'}}));
+  assert.equal(unexpectedType.status,502);
+  const stalled=await call(async (url,{signal})=>new Response(new ReadableStream({start(controller){
+    signal.addEventListener('abort',()=>controller.error(signal.reason),{once:true});
+    controller.enqueue(new TextEncoder().encode('{"pending":'));
+  }}),{status:429,headers:{'Content-Type':'application/json','Retry-After':'15'}}));
+  assert.equal(stalled.status,503);
+  assert.equal(stalled.headers.get('retry-after'),'5');
+  assert.equal((await stalled.json()).status,'unavailable');
+});
+
 test('the SSE relay reads only bounded demand when the downstream consumer is paused',async t=>{
   environment(t);let pulls=0,cancelled=0;
   const source=new ReadableStream({pull(controller){pulls++;controller.enqueue(new Uint8Array([10]));},cancel(){cancelled++;}},{highWaterMark:0});
