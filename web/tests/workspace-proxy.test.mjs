@@ -145,6 +145,43 @@ test('SSE connection timeouts finish before headers and non-SSE errors retain th
   assert.equal(denied.status,429);assert.equal(denied.headers.get('retry-after'),'15');assert.deepEqual(await denied.json(),{error:'Stream capacity reached'});
 });
 
+test('both stream routes preserve HTML gateway errors when abort rejects body cleanup',async t=>{
+  environment(t);
+  for(const path of [['stream'],['portfolio','stream']]){
+    const response=await proxyBackend(new Request('https://predictir.dev/api/'+path.join('/'),{headers}),path,{fetcher:async (url,{signal})=>{
+      const body=new ReadableStream({start(controller){
+        signal.addEventListener('abort',()=>controller.error(signal.reason),{once:true});
+      }});
+      return new Response(body,{headers:{'Content-Type':'text/html'}});
+    }});
+    assert.equal(response.status,502);
+    assert.equal(response.headers.get('retry-after'),'5');
+    assert.match((await response.json()).error,/web page/);
+  }
+});
+
+test('stream handshakes reject non-SSE success and bound invalid or stalled error bodies',async t=>{
+  environment(t);
+  const request=new Request('https://predictir.dev/api/stream',{headers});
+  const call=fetcher=>proxyBackend(request,['stream'],{fetcher,streamConnectTimeoutMs:50});
+  const unexpected=await call(async()=>Response.json({ok:true}));
+  assert.equal(unexpected.status,502);
+  assert.match((await unexpected.json()).error,/event stream/);
+  const oversized=await call(async()=>new Response('too large',{status:503,
+    headers:{'Content-Type':'application/json','Content-Length':String(9*1024*1024)}}));
+  assert.equal(oversized.status,503);
+  assert.equal(oversized.headers.get('retry-after'),'5');
+  const unexpectedType=await call(async()=>new Response('unexpected',{status:503,headers:{'Content-Type':'text/event-stream'}}));
+  assert.equal(unexpectedType.status,502);
+  const stalled=await call(async (url,{signal})=>new Response(new ReadableStream({start(controller){
+    signal.addEventListener('abort',()=>controller.error(signal.reason),{once:true});
+    controller.enqueue(new TextEncoder().encode('{"pending":'));
+  }}),{status:429,headers:{'Content-Type':'application/json','Retry-After':'15'}}));
+  assert.equal(stalled.status,503);
+  assert.equal(stalled.headers.get('retry-after'),'5');
+  assert.equal((await stalled.json()).status,'unavailable');
+});
+
 test('the SSE relay reads only bounded demand when the downstream consumer is paused',async t=>{
   environment(t);let pulls=0,cancelled=0;
   const source=new ReadableStream({pull(controller){pulls++;controller.enqueue(new Uint8Array([10]));},cancel(){cancelled++;}},{highWaterMark:0});
@@ -152,4 +189,49 @@ test('the SSE relay reads only bounded demand when the downstream consumer is pa
   await new Promise(resolve=>setImmediate(resolve));assert.equal(pulls,1);
   const reader=response.body.getReader();await reader.read();await new Promise(resolve=>setImmediate(resolve));assert.equal(pulls,2);
   await reader.cancel();assert.equal(cancelled,1);assert.equal(source.locked,false);
+});
+
+test('JSON body failures become retryable unavailable responses before committing success headers',async t=>{
+  environment(t);
+  const response=await proxyBackend(new Request('https://predictir.dev/api/book',{headers}),['book'],{fetcher:async()=>new Response(new ReadableStream({start(controller){controller.error(new Error('PRIVATE_COLD_START_DETAIL'));}}),{headers:{'Content-Type':'application/json'}})});
+  assert.equal(response.status,503);
+  assert.equal(response.headers.get('cache-control'),'no-store');
+  assert.equal(response.headers.get('retry-after'),'5');
+  const data=await response.json();assert.equal(data.status,'unavailable');assert.match(data.error,/temporarily unavailable/);assert.ok(!JSON.stringify(data).includes('PRIVATE_COLD_START_DETAIL'));
+});
+
+test('cold starts timing out before headers or during the JSON body return safe retry guidance',async t=>{
+  environment(t);
+  const server=createServer((request,response)=>{
+    if(request.url==='/body'){response.writeHead(200,{'Content-Type':'application/json'});response.write('{"pending":');}
+    // Simulate a container that accepts TCP but does not finish starting.
+  });
+  await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));
+  t.after(async()=>{server.closeAllConnections();await new Promise(resolve=>server.close(resolve));});
+  for(const path of ['/headers','/body']){
+    const response=await proxyBackend(new Request('https://predictir.dev/api/book',{headers}),['book'],{jsonTimeoutMs:100,
+      fetcher:(url,init)=>fetch(`http://127.0.0.1:${server.address().port}`+path,init)});
+    assert.equal(response.status,503);assert.equal(response.headers.get('retry-after'),'5');assert.equal(response.headers.get('cache-control'),'no-store');
+    assert.equal((await response.json()).status,'unavailable');
+  }
+});
+
+test('proxy preserves backend warmup status and retry-after without replaying writes',async t=>{
+  environment(t);let calls=0;
+  const response=await proxyBackend(new Request('https://predictir.dev/api/journal',{method:'POST',headers,body:'{}'}),['journal'],{fetcher:async()=>{
+    calls++;return Response.json({error:'Warming up'},{status:503,headers:{'Retry-After':'12'}});
+  }});
+  assert.equal(calls,1);assert.equal(response.status,503);assert.equal(response.headers.get('retry-after'),'12');assert.deepEqual(await response.json(),{error:'Warming up'});
+});
+
+test('verification assets remain public and security headers apply before filesystem routing',async()=>{
+  assert.equal(config.rewrites,undefined);
+  const redirects=await config.redirects();assert.ok(!redirects.some(row=>row.source.includes('google')||row.source.includes(':path')));
+  const rules=await config.headers(),all=rules.find(row=>row.source==='/:path*');
+  const headers=Object.fromEntries(all.headers.map(({key,value})=>[key,value]));
+  assert.equal(headers['X-Content-Type-Options'],'nosniff');assert.equal(headers['X-Frame-Options'],'DENY');assert.equal(headers['Referrer-Policy'],'no-referrer');
+  assert.equal((await readFile(new URL('../public/google7653305cfae6f81b.html',import.meta.url),'utf8')).trim(),'google-site-verification: google7653305cfae6f81b.html');
+  const lab=await readFile(new URL('../public/lab.html',import.meta.url),'utf8'),head=lab.split('</head>')[0];
+  assert.ok(head.includes('<meta name="google-site-verification" content="google7653305cfae6f81b" />'));
+  assert.match(head,/<meta name="description" content="Independent.*Not affiliated with, endorsed by, or operated by Kalshi\./);
 });
