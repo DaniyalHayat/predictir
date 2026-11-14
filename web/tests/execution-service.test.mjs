@@ -6,11 +6,12 @@ import {workspaceExecutionResearch,parseExecutionRequest,executionToolPacket} fr
 import {createResearchServer,boundPacket} from '../lib/workspace/mcp.mjs';
 import {parseAssistantInput,assistantResponse,explainExecutionMath} from '../lib/workspace/assistant.mjs';
 import {POST} from '../app/api/[...path]/route.js';
+import {marketFees} from '../lib/cloud/resolve.mjs';
 
 const now=Date.parse('2026-11-05T03:00:00Z'),ticker='LAB-FIXTURE',iso=new Date(now).toISOString();
 function fixtures(){
   return {now:()=>now,book:async()=>({ticker,as_of:iso,source_url:'https://example.org/public-book',raw:{orderbook_fp:{yes_dollars:[['.4','100']],no_dollars:[['.58','100']]}}}),marketFees:async()=>({coefficient:.07}),
-    workspaceResearch:async(t,options)=>{assert.equal(t,ticker);assert.equal(options.fast,true);return {ticker,market:{ticker,title:'Fixture outcome',category:'culture'},forecast:{probability:.7,interval:[.6,.8],source_as_of:iso,eligible:true,evidence:{tier:2},validation:{passed:true}},sources:[]};},feed:{observations:t=>{assert.equal(t,ticker);return [];}}};
+    workspaceResearch:async(t,options)=>{assert.equal(t,ticker);assert.equal(options.fast,true);return {ticker,market:{ticker,title:'Fixture outcome',category:'culture',price_ranges:[{start:'0',end:'1',step:'0.001'}]},forecast:{probability:.7,interval:[.6,.8],source_as_of:iso,eligible:true,evidence:{tier:2},validation:{passed:true}},sources:[]};},feed:{observations:t=>{assert.equal(t,ticker);return [];}}};
 }
 
 test('execution request validation is shared with assistant controls and rejects unknown inputs without coercion',()=>{
@@ -29,6 +30,8 @@ test('execution service uses the exact current contract, preserves the independe
   assert.equal(result.live_history.status,'collecting');assert.equal(result.order_flow.applied,false);assert.equal(result.arrival_model.applied,false);
   assert.equal(result.immediate_execution.slippage_cents,2);assert.equal(result.immediate_execution.side,'yes');assert.equal(result.paper_only,true);
   assert.notEqual(result.inventory_quotes.reservation_price,result.market_state.mid);
+  assert.equal(result.inventory_quotes.available,true);
+  for(const price of [result.inventory_quotes.bid,result.inventory_quotes.ask])assert.ok(Math.abs(price*1000-Math.round(price*1000))<1e-9);
   const packet=boundPacket(executionToolPacket(result));assert.equal(packet.version,'execution-research-v1');assert.equal(packet.schedule.rows.length,24);assert.equal(packet.schedule.rows_total,60);assert.equal(packet.schedule.benchmark_twap.rows,undefined);assert.ok(Buffer.byteLength(JSON.stringify(packet))<=14000);
   const disabled=await workspaceExecutionResearch(ticker,{controls:{enabled:false,inventory:10}},fixtures());assert.equal(disabled.inventory_quotes.applied,false);assert.equal(disabled.schedule.method,'equal_quantity_TWAP');
   const bad=fixtures();bad.book=async()=>({...await fixtures().book(),ticker:'OTHER'});await assert.rejects(workspaceExecutionResearch(ticker,{},bad),/do not match/);
@@ -43,6 +46,32 @@ test('an unsupported or unavailable fee schedule remains an explicit assumption 
   const dependencies=fixtures();dependencies.marketFees=async()=>({coefficient:null,fee_type:'unsupported'});
   const result=await workspaceExecutionResearch(ticker,{},dependencies);
   assert.equal(result.fee_schedule.status,'assumed_default');assert.equal(result.immediate_execution.fee_coefficient,.07);assert.equal(result.settlement.decision,'REVIEW');assert.match(result.assumptions.fees,/not a verified fee quote/);assert.equal(result.independent_forecast_unchanged,true);
+});
+
+test('event fee overrides take precedence, and unresolved waivers or mismatched metadata cannot supply a reported coefficient',async()=>{
+  const selected={ticker,event_ticker:'FIXTURE-EVENT'};
+  const event={event_ticker:selected.event_ticker,series_ticker:'FIXTURE-SERIES'};
+  const series={ticker:event.series_ticker,fee_type:'quadratic',fee_multiplier:1};
+  const read=(override={},market={},seriesFields={})=>marketFees(ticker,{
+    now:()=>now,readMarket:async()=>({market:{...selected,...market}}),
+    get:async path=>path.startsWith('/events/')?{data:{event:{...event,...override}},as_of:iso,source_url:'https://example.org/event'}:
+      {data:{series:{...series,...seriesFields}},as_of:iso,source_url:'https://example.org/series'}
+  });
+  assert.equal((await read()).coefficient,.07);
+  const updated=await read({fee_multiplier_override:2});
+  assert.equal(updated.coefficient,.14);
+  assert.equal(updated.basis,'event_override');
+  assert.equal(updated.source_url,'https://example.org/event');
+  assert.equal((await read({fee_multiplier_override:0})).coefficient,0);
+  assert.equal((await read({fee_type_override:'unsupported'})).coefficient,null);
+  assert.equal((await read({}, {fee_waiver_expiration_time:new Date(now+1000).toISOString()})).coefficient,null);
+  assert.equal((await read({}, {fee_waiver_expiration_time:new Date(now-1000).toISOString()})).coefficient,.07);
+  await assert.rejects(read({event_ticker:'OTHER'}),/selected event/);
+  await assert.rejects(read({}, {}, {ticker:'OTHER'}),/selected series/);
+  const deps=fixtures();deps.marketFees=async()=>updated;
+  const result=await workspaceExecutionResearch(ticker,{},deps);
+  assert.equal(result.fee_schedule.status,'event_coefficient_available');
+  assert.equal(result.immediate_execution.fee_coefficient,.14);
 });
 
 test('execution packets preserve an experimental outcome model label and its failed release gate',async()=>{

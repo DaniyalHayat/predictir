@@ -31,7 +31,7 @@ function LiveDepth({book,market,controls,fees,clock,closed,onRefresh}){
       <div><strong>{count(depth.available)} contracts</strong><span>{action==='sell'?'Sell':'Buy'} {side.toUpperCase()} available within 2¢ of the best price{depth.best!==null?` (${cents(depth.best)} to ${cents(depth.limit)})`:''}</span></div>
       <div><strong>{quote?`${count(quote.filled)} / ${count(quote.requested)} estimated fill`:'Enter a valid quantity'}</strong><span>{quote?`${count(quote.unfilled)} unfilled · ${quote.vwap===null?'No average fill price':cents(quote.vwap)+' average fill price'}`:'Use 1 to 10,000 whole contracts.'}</span></div>
       {quote&&<div><strong>{dollars(quote.cash)}</strong><span>{action==='sell'?'Net proceeds':'Cash required'} for the estimated fill · {dollars(quote.fee)} modeled fee</span></div>}
-      <p>{depth.feeVerified?'Fee uses the reported series coefficient.':'Fee assumes the general 0.07 coefficient.'} Public snapshot for paper research. Quotes can move before any real trade.</p>
+      <p>{depth.feeVerified?'The reported taker coefficient is used with modeled rounding.':'Fee assumes the general 0.07 coefficient.'} Public snapshot for paper research. Quotes can move before any real trade.</p>
     </div>:<p className="notice" role="status">{status[depth.status]}</p>}
   </section>;
 }
