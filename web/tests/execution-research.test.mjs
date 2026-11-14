@@ -3,9 +3,10 @@ import assert from 'node:assert/strict';
 import {executionResearch,normalizeExecutionControls,almgrenChrissSchedule} from '../lib/workspace/execution-research.mjs';
 import {contiguousBookHistory,exponentialHawkesLikelihood,fitOrderFlowChallenger,quoteArrivalResearch} from '../lib/workspace/microstructure-model.mjs';
 import {executionCurve} from '../lib/workspace/execution-curve.mjs';
+import {snapInventoryQuotes} from '../lib/workspace/price-grid.mjs';
 
 const NOW=Date.parse('2026-11-05T03:00:00Z');
-const fixture=(category='sports')=>({market:{ticker:'FIXTURE-'+category,category,status:'active'},book:{ticker:'FIXTURE-'+category,as_of:new Date(NOW).toISOString(),raw:{orderbook_fp:{yes_dollars:[['0.48','100'],['0.46','50']],no_dollars:[['0.48','100'],['0.46','50']]}}},forecast:{valid:true,fresh:true,eligible:true,probability:.65,interval:[.61,.69],model:'supplied fixture',source_as_of:new Date(NOW).toISOString()},now:NOW});
+const fixture=(category='sports')=>({market:{ticker:'FIXTURE-'+category,category,status:'active',price_ranges:[{start:'0.00',end:'1.00',step:'0.01'}]},book:{ticker:'FIXTURE-'+category,as_of:new Date(NOW).toISOString(),raw:{orderbook_fp:{yes_dollars:[['0.48','100'],['0.46','50']],no_dollars:[['0.48','100'],['0.46','50']]}}},forecast:{valid:true,fresh:true,eligible:true,probability:.65,interval:[.61,.69],model:'supplied fixture',source_as_of:new Date(NOW).toISOString()},now:NOW});
 const event=(sequence,bid_price=.48,bid_size=100,ask_price=.52,ask_size=100,time_seconds=sequence,generation='a')=>({sequence,bid_price,bid_size,ask_price,ask_size,time_seconds,generation});
 
 function signalHistory({count=512,seed=127,signal=true,clustered=false}={}){
@@ -89,6 +90,29 @@ test('missing history, unavailable or unapproved forecasts and partial depth rem
   const partial=executionResearch({...initial,controls:{contracts:1000}});assert.equal(partial.exit_execution.complete,false);assert.equal(partial.settlement.sell_now_value,null);assert.equal(partial.settlement.decision,'REVIEW');
   assert.throws(()=>executionResearch({...initial,book:{...initial.book,ticker:'OTHER'}}),/exact contract/);
   assert.throws(()=>executionResearch({...initial,now:NOW+91000}),/90 seconds/);
+});
+
+test('inventory bid and ask quotes use the exact market grid, with NO expressed in complementary prices',()=>{
+  const ranges=[{start:'0.00',end:'0.10',step:'0.001'},{start:'0.10',end:'0.90',step:'0.01'},{start:'0.90',end:'1.00',step:'0.001'}];
+  assert.deepEqual(snapInventoryQuotes(ranges,'yes',.09855,.102),{bid:.098,ask:.11});
+  assert.deepEqual(snapInventoryQuotes(ranges,'no',.898,.90145),{bid:.89,ask:.902});
+  assert.deepEqual(snapInventoryQuotes(ranges,'yes',.1,.9),{bid:.1,ask:.9});
+  assert.deepEqual(snapInventoryQuotes([{start:'0',end:'1',step:'0.0001'}],'yes',.49239,.50761),{bid:.4923,ask:.5077});
+  assert.deepEqual(snapInventoryQuotes([{start:'0.02',end:'0.95',step:'0.02'}],'yes',.035,.92),{bid:.02,ask:.92});
+  assert.equal(snapInventoryQuotes([{start:'0.10',end:'0.90',step:'0.02'}],'yes',.05,.15),null);
+
+  const input=fixture();
+  const finer=executionResearch({...input,market:{...input.market,price_ranges:[{start:'0',end:'1',step:'0.001'}]},controls:{inventory:1,risk_aversion:.1}});
+  assert.equal(finer.inventory_quotes.available,true);
+  assert.notEqual(finer.inventory_quotes.bid,Math.round(finer.inventory_quotes.bid*100)/100);
+  const missing=executionResearch({...input,market:{...input.market,price_ranges:undefined}});
+  const invalid=executionResearch({...input,market:{...input.market,price_ranges:[{start:'0',end:'1',step:'0'}]}});
+  for(const result of [missing,invalid]){
+    assert.equal(result.inventory_quotes.available,false);
+    assert.equal(result.inventory_quotes.bid,null);
+    assert.equal(result.inventory_quotes.ask,null);
+    assert.equal(result.immediate_execution.complete,true);
+  }
 });
 
 test('control validation rejects coercion, unknown controls, oversized computation and malformed booleans',()=>{
