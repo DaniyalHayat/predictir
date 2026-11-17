@@ -222,11 +222,20 @@ test('assistant uses real MCP-shaped tools, budgets before generation and closes
   t.after(()=>{for(const [key,value] of [['MARKET_BACKEND_URL',previous.backend],['ASSISTANT_SERVICE_SECRET',previous.secret]])if(value===undefined)delete process.env[key];else process.env[key]=value;});
   const calls=[];let closed=false;
   const client={listTools:async()=>({tools:[{name:'get_research',description:'Public research',inputSchema:{type:'object',properties:{ticker:{type:'string'}},required:['ticker']}}]}),
-    callTool:async input=>{calls.push(input);return {content:[{type:'text',text:JSON.stringify({ticker,opinion:{side:'PASS'},sources:[{url:'javascript:alert(1)'},{url:'https://user:private-credential-sentinel@example.com/'},{url:source}]})}]};},close:async()=>{closed=true;}};
+    callTool:async input=>{calls.push(input);return {content:[{type:'text',text:JSON.stringify({
+      ticker,as_of:new Date().toISOString(),opinion:{side:'PASS'},
+      rules:{primary:'The named event must finish before the published deadline.',secondary:'Only a final result qualifies.'},
+      drivers:[{kind:'historical_reference',name:'Dated fixture record',detail:'It records a preliminary result.',url:'https://official.example/fixture'}],
+      sources:[{url:'javascript:alert(1)'},{url:'https://user:private-credential-sentinel@example.com/'},{url:source}]
+    })}]};},close:async()=>{closed=true;}};
   const request=()=>new Request('https://predictir.dev/api/assistant',{method:'POST',headers:{Origin:'https://predictir.dev','Content-Type':'application/json'},body:JSON.stringify({ticker,messages:[{role:'user',content:'Explain the model.'}]})});
   const response=await assistantResponse(request(),{createClient:async()=>client,fetcher:async(url,options)=>{calls.push({reserve:url.pathname,body:JSON.parse(options.body)});return {reserved_usd:.025};},
     generate:options=>({fullStream:(async function*(){assert.deepEqual(options.prepareStep({stepNumber:0,messages:[]}).toolChoice,{type:'tool',toolName:'get_research'});const result=await options.tools.get_research.execute({ticker});assert.equal(result.opinion.side,'PASS');assert.equal(options.prepareStep({stepNumber:2,messages:[]}).toolChoice,'none');yield {type:'text-delta',text:'PASS: no supported edge.'};await options.onFinish();})()})});
   const answer=await response.text();assert.match(answer,/PASS/);assert.ok(answer.includes(source));assert.match(answer,/Sources checked/);assert.ok(!answer.includes('javascript:'));assert.ok(!answer.includes('private-credential-sentinel'));
+  assert.match(answer,/^PASS: no supported edge\./);
+  assert.match(answer,/^Settlement rule: .* published deadline\. Only a final result qualifies\.$/m);
+  assert.match(answer,/^Research screen: PASS\. Supported allocation: 0 contracts\.$/m);
+  assert.match(answer,/^\[Dated fixture record\]\(https:\/\/official\.example\/fixture\) It records a preliminary result\.$/m);
   assert.equal(calls[0].reserve,'/internal/assistant/reserve');assert.match(calls[0].body.fingerprint,/^[a-f0-9]{64}$/);assert.equal(closed,true);
   const blocked=await assistantResponse(request(),{fetcher:async()=>{throw Object.assign(new Error('budget'),{status:429});},generate:()=>{throw new Error('must not generate');}});
   assert.equal(blocked.status,429);
