@@ -16,6 +16,7 @@ import {paperActionError,paperTools} from './paper-actions.mjs';
 import {parsePositionReview,reviewPaperPosition} from './position-review.mjs';
 import {forecastSourceAllowed} from './forecast-source-policy.mjs';
 import {azureToolArguments,planResearchReadback} from './azure-research.mjs';
+import {safePublicURL} from './source-ranking.mjs';
 
 const OPTIONAL_READBACK_MS=12000;
 
@@ -47,30 +48,85 @@ export function publicResearch(value){
     errors:value.errors,extensions:{sports:value.extensions?.sports,music:music?{scope:music.scope,comparability:music.comparability,
       forecast:music.forecast,persistence:music.persistence,source_updated:music.apple?.source_updated,scope_note:music.apple?.note}:undefined}};
 }
+
+function compactSources(rows,maximum){
+  return (rows||[]).flatMap(row=>{
+    const url=safePublicURL(row?.url);
+    return url&&url.length<=1200&&forecastSourceAllowed(url)?[{
+      url,label:String(row.label||row.name||'Public source').slice(0,120),
+      retrieved_at:typeof row.retrieved_at==='string'?row.retrieved_at.slice(0,40):undefined
+    }]:[];
+  }).slice(0,maximum);
+}
+
+function compactResearchCore(value){
+  const f=value.forecast,opinion=value.opinion;
+  return {
+    ticker:value.ticker,title:String(value.title||'').slice(0,180),as_of:value.as_of,status:value.status,
+    summary:String(value.summary||'').slice(0,400),
+    opinion:opinion?{side:opinion.side,reason:String(opinion.reason||'').slice(0,350),
+      supported_allocation:opinion.supported_allocation}:undefined,
+    forecast:f?{probability:f.probability,interval:f.interval,independent_forecast:f.independent_forecast,
+      eligible:f.eligible,experimental:f.experimental,model_name:String(f.model_name||'').slice(0,160),
+      source_as_of:f.source_as_of,max_source_age_seconds:f.max_source_age_seconds,reason:String(f.reason||'').slice(0,350),
+      release_reason:String(f.release_reason||'').slice(0,350),interval_kind:String(f.interval_kind||'').slice(0,140),
+      evidence:f.evidence?{tier:f.evidence.tier,label:String(f.evidence.label||'').slice(0,120)}:undefined,
+      outcomes:f.outcomes?{yes:f.outcomes.yes,no:f.outcomes.no,tie:f.outcomes.tie}:undefined,
+      expected_settlement_value:f.expected_settlement_value}:undefined,
+    rules:value.rules?{primary:String(value.rules.primary||'').slice(0,1800),
+      secondary:String(value.rules.secondary||'').slice(0,700),close_time:value.rules.close_time}:undefined,
+    reporting_status:value.reporting_status,
+    scope:'The packet retains core research and selected sources. Additional diagnostics were omitted.'
+  };
+}
+
 export function boundPacket(value,maximum=14000){
-  if(Buffer.byteLength(JSON.stringify(value))<=maximum)return value;
+  const fits=packet=>Buffer.byteLength(JSON.stringify(packet))<=maximum;
+  if(fits(value))return value;
   if(Array.isArray(value.citations)){
     const citations=value.citations.filter(c=>typeof c.url==='string'&&c.url.length<=1200).slice(0,3).map(c=>({...c,title:String(c.title||'').slice(0,180),text:String(c.text||'').slice(0,650)}));
     const packet={ticker:value.ticker,status:citations.length?value.status:'empty',reason:citations.length?undefined:'The retained citation packet exceeded the display limit; use a narrower query.',retrieval:value.retrieval,citations,sources:citations.map(c=>({label:c.citation_id,url:c.url,retrieved_at:c.retrieved_at})),scope:'Retained public citations only; additional source chunks omitted to fit the context bound.'};
-    if(Buffer.byteLength(JSON.stringify(packet))<=maximum)return packet;
+    if(fits(packet))return packet;
   }
   const lean={ticker:value.ticker,title:value.title,as_of:value.as_of,summary:value.summary,opinion:value.opinion,
     account_balances_available:value.account_balances_available,units:value.units,forecast:value.forecast,decision:value.decision,
     paper_scenarios:value.paper_scenarios,market_signal:value.market_signal,rules:value.rules,drivers:value.drivers,evidence:value.evidence,
     reporting_status:value.reporting_status,model_context:value.model_context,sources:value.sources,
     scope:'Additional details omitted to keep the research packet bounded.'};
-  if(Buffer.byteLength(JSON.stringify(lean))<=maximum)return lean;
+  if(fits(lean))return lean;
+  const modelContext=value.model_context?{...value.model_context,updates:undefined}:undefined;
   const forecast=value.forecast,compact={ticker:value.ticker,title:String(value.title||'').slice(0,180),as_of:value.as_of,
     summary:String(value.summary||'').slice(0,1200),opinion:value.opinion,
     forecast:forecast?Object.fromEntries(['probability','interval','eligible','independent_forecast','experimental','model_name',
       'source_as_of','source_url','max_source_age_seconds','reason','outcomes','expected_settlement_value','interval_kind','evidence',
       'release_reason'].filter(key=>forecast[key]!==undefined).map(key=>[key,forecast[key]])):undefined,
     rules:value.rules?{primary:String(value.rules.primary||'').slice(0,1800),secondary:String(value.rules.secondary||'').slice(0,700),close_time:value.rules.close_time}:undefined,
-    evidence:(value.evidence||[]).slice(0,5),reporting_status:value.reporting_status,model_context:value.model_context,
+    evidence:(value.evidence||[]).slice(0,5),reporting_status:value.reporting_status,model_context:modelContext,
     sources:(value.sources||[]).filter(row=>typeof row.url==='string'&&row.url.length<=1800).slice(0,6),
     paper_scenarios:(value.paper_scenarios||[]).slice(0,2),
     scope:'Large model diagnostics omitted; current forecast, dated reporting and paper scenarios retained.'};
-  if(Buffer.byteLength(JSON.stringify(compact))<=maximum)return compact;
+  if(fits(compact))return compact;
+  if(value.rules||forecast){
+    const core=compactResearchCore(value);
+    if(fits(core)){
+      const sources=compactSources(value.sources,4);
+      const evidence=(value.evidence||[]).flatMap(row=>{
+        const url=safePublicURL(row?.url);
+        return url&&url.length<=1200&&forecastSourceAllowed(url)?[{
+          url,title:String(row.title||'').slice(0,180),publisher:String(row.publisher||'').slice(0,100),
+          published_at:row.published_at,retrieved_at:row.retrieved_at,match_scope:row.match_scope,
+          excerpt:String(row.excerpt||'').slice(0,400)
+        }]:[];
+      }).slice(0,3);
+      for(const [key,rows] of [['sources',sources],['evidence',evidence]]){
+        for(const row of rows){
+          const current=[...(core[key]||[]),row];
+          if(fits({...core,[key]:current}))core[key]=current;
+        }
+      }
+      return core;
+    }
+  }
   return {ticker:String(value.ticker||'').slice(0,140),reason:'The source packet exceeded the display bound. Ask for specific rules, prices or source status.'};
 }
 export function createResearchServer({tickerScope,modelScope='baseline',executionScope,paperActions,positionScope,dependencies={}}={}) {

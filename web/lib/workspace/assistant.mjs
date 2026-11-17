@@ -403,10 +403,12 @@ export async function assistantResponse(request,{createClient,generate=streamTex
       if(++calls>3)return {status:'limit',reason:'Three research reads per answer are allowed'};
       if(input.ticker&&input.ticker!==ticker)return {status:'unavailable',reason:'Use the selected contract'};
       const result=await client.callTool({name,arguments:input},undefined,{signal:request.signal,timeout:17000});
+      if(result.isError)return {status:'unavailable',reason:'The selected public research source is temporarily unavailable.'};
       const text=result.content?.filter(c=>c.type==='text').map(c=>c.text).join('\n')||'No source response';
       if(Buffer.byteLength(text)>14000)return {status:'unavailable',reason:'The source packet exceeded the context limit'};
       try{const packet=JSON.parse(text);
-        if(name==='get_research'&&packet.ticker===ticker)checkedResearch=packet;
+        if(packet.ticker&&packet.ticker!==ticker)return {status:'unavailable',reason:'Use the selected contract'};
+        if(name==='get_research'&&packet.ticker===ticker&&(packet.rules||packet.forecast||packet.opinion))checkedResearch=packet;
         for(const source of packet.sources||[]){if(sources.size>=4)break;try{const url=new URL(source.url);if(url.protocol==='https:'&&!url.username&&!url.password)sources.set(url.href,{url:url.href,label:source.label});}catch{}}
         return packet;
       }catch{return {status:'unavailable',reason:'The research response was not structured data'};}

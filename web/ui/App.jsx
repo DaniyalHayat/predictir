@@ -69,9 +69,12 @@ const MarketRow=memo(function MarketRow({row,selected,opinion,onSelect,onResearc
   const listPrice=quote=>quotesExpired?null:quote;
   const noAsk=row.no_ask??(Number.isFinite(row.yes_bid)?1-row.yes_bid:null);
   const observed=livePrices?.asOf||row.quote_as_of;
+  const activity=row.sampled_trade_contracts>row.volume_24h
+    ?count(row.sampled_trade_contracts)+' contracts in sampled trades'
+    :count(row.volume_24h)+' 24h contracts';
   return <div className={'market-row '+(selected?'selected':'')} data-market-ticker={row.ticker}>
     <button className="market-select" data-analytics-market={row.ticker} data-analytics-category={row.category} onClick={()=>onSelect(row)} aria-label={'Open '+contractTitle(row)} aria-current={selected?'true':undefined}>
-      <div><span className="row-series">{row.series||row.ticker.split('-')[0]}</span><h2>{contractTitle(row)}</h2>{row.event_ticker&&<small className="row-event">Event {row.event_ticker}</small>}<small>{count(row.volume_24h)} 24h contracts · closes {dateLabel(row.close_time)}</small></div>
+      <div><span className="row-series">{row.series||row.ticker.split('-')[0]}</span><h2>{contractTitle(row)}</h2>{row.event_ticker&&<small className="row-event">Event {row.event_ticker}</small>}<small>{activity} · closes {dateLabel(row.close_time)}</small></div>
       <div className="row-prices" title={observed?'Kalshi order book observed '+new Date(observed).toLocaleString():undefined}><strong>{cents(livePrices?livePrices.yes:listPrice(row.yes_ask))}</strong><span>{cents(livePrices?livePrices.no:listPrice(noAsk))}</span></div>
     </button>
     <button className="row-opinion" onClick={()=>onResearch(row)} title={opinion?.reason||'Open the research view for model coverage and evidence gaps.'} aria-label={'Research view for '+contractTitle(row)+(side?': '+side:'')}>

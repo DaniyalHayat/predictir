@@ -184,3 +184,34 @@ test('large diagnostics preserve current probability and dated reporting inside 
   assert.equal(value.evidence[0].title,'Matched source');
   assert.equal(value.forecast.inputs,undefined);
 });
+
+test('oversized reporting keeps exact contract rules and dated evidence through the MCP server',async()=>{
+  const ticker='KXETH15M-FIXTURE',as_of=new Date().toISOString();
+  const primary='The later 60-second reference average must be at least the earlier average.';
+  const market={ticker,title:'ETH reference average',rules_primary:primary};
+  const entries=Array.from({length:5},(_,index)=>({
+    title:'Reference observation '+index,publisher:'Public reference publisher',url:'https://example.com/observation/'+index,
+    excerpt:'測'.repeat(650),why_relevant:'測'.repeat(350),impact:'測'.repeat(350),published_at:as_of,match_scope:'contract',
+  }));
+  const panel='analysis',detail='full',question=assistantContext(panel,ticker,{detail}).question;
+  const results=await localResearchReadback({ticker,model:'validated',panel,detail,question,signal:new AbortController().signal,
+    dependencies:{
+      marketDetails:async()=>({market,as_of,source_url:'https://example.com/contract'}),
+      book:async()=>null,
+      workspaceResearch:async()=>({ticker,market,as_of,title:market.title,rules:{primary},opinion:{side:'PASS'},
+        forecast:{probability:.61,interval:[.5,.72],independent_forecast:true,source_as_of:as_of},
+        paper_scenarios:Array.from({length:2},()=>({diagnostics:'測'.repeat(10000)}))}),
+      contractEvidence:async()=>({ticker,as_of,items:entries}),
+      searchRetainedEvidence:async()=>({ticker,status:'empty',citations:[]}),
+    }});
+  const response=results.find(result=>result.name==='get_research').result.content[0].text;
+  assert.ok(Buffer.byteLength(response)<=14000);
+  const packet=JSON.parse(response);
+  assert.equal(packet.ticker,ticker);
+  assert.equal(packet.rules.primary,primary);
+  assert.equal(packet.forecast.probability,.61);
+  assert.equal(packet.opinion.side,'PASS');
+  assert.equal(packet.evidence[0].published_at,as_of);
+  assert.equal(packet.evidence[0].url,entries[0].url);
+  assert.equal(packet.sources[0].url,entries[0].url);
+});
