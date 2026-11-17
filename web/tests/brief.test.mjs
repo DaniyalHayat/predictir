@@ -49,6 +49,11 @@ test('impeachment evidence requires the actual House vote and withholds a probab
   assert.equal(result.decision.side, 'insufficient_edge');
   assert.equal(result.drivers[0].url, 'https://clerk.house.gov/Votes');
   assert.match(result.drivers[0].detail, /tabling does not satisfy/);
+  const records = result.drivers.filter(row => row.kind === 'historical_reference');
+  assert.deepEqual(records.map(row => row.url), [
+    'https://clerk.house.gov/Votes/2026298',
+    'https://www.govinfo.gov/app/details/BILLS-119hres1575ih'
+  ]);
   assert.doesNotMatch(JSON.stringify(result.drivers), /polling|turnout/i);
 });
 test('bad validation, incomplete depth, stale book and expired market fail closed', async () => {

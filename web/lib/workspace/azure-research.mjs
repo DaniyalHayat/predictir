@@ -125,7 +125,8 @@ function modelPriceComparison(contract,research,now){
     if(forecast.outcomes&&cents(forecast.expected_settlement_value)!==null)
       lines.push('The rules also allow a partial payout. Including that case, modeled YES settlement value is '+cents(forecast.expected_settlement_value)+' per contract.');
     lines.push('For the paper decision, compare the modeled payout with the all-in entry cost. The gap to the midpoint alone does not cover the spread, fees or uncertainty.');
-  }else lines.push('A current independent estimate is unavailable for this comparison. '+(clean(forecast?.reason,300)||'The independent source timestamp is missing or outside the model’s freshness window.'));
+  }else lines.push('A current independent estimate is unavailable for this comparison. '+
+    ((sourceCurrent||cents(forecast?.probability)===null)&&clean(forecast?.reason,300)||'The independent source timestamp is missing or outside the model’s freshness window.'));
   return lines.join('\n\n');
 }
 
@@ -134,7 +135,7 @@ function paperFacts(research,ticker,now,full){
     Number.isFinite(row.contracts)&&row.contracts>0&&cents(row.break_even)&&dollars(row.cost)).slice(0,2).map(row=>{
     const breakdown=dollars(row.fee)?', including '+dollars(row.fee)+' in modeled fees':'';
     let line=`Paper ${row.side} uses ${dollars(row.cost)} for ${quantity(row.contracts)} contracts${breakdown}. The all-in break-even is ${cents(row.break_even)} per contract.`;
-    if(full&&ticker.startsWith('KXIMPEACH-')){
+    if(ticker.startsWith('KXIMPEACH-')){
       const steps=binaryBreakEvenExplanation(row);
       if(steps)line+=' '+steps;
     }
@@ -373,16 +374,16 @@ export async function azureResearchAnswer({question,ticker,panel,detail,executio
       if(comparison.length)parts.push('## What the paper trade looks like',...comparison);
       else if(panel==='paper')parts.push('No fresh paper fill was returned for either side at the reference budget.');
     }
+    if(ticker.startsWith('KXIMPEACH-')&&(!panel||['analysis','paper','evidence'].includes(panel))){
+      const checks=rows(research.drivers).filter(row=>row&&(full||row.kind==='historical_reference')).slice(0,5).map(row=>{
+        const url=publicSource(row.url);
+        return [url?link({url,label:row.name}):clean(row.name,100),clean(row.detail,450)].filter(Boolean).join(' ');
+      }).filter(Boolean);
+      if(checks.length)parts.push(full?'## How to verify the decision':'## Dated House records',...checks);
+    }
     if(full&&(!panel||['analysis','paper','evidence'].includes(panel))){
       const notes=fullModelNotes(research,now);
       if(notes.length)parts.push('## Model checks and what could change the view',...notes);
-      if(ticker.startsWith('KXIMPEACH-')){
-        const checks=rows(research.drivers).slice(0,3).map(row=>{
-          const url=publicSource(row?.url);
-          return [clean(row?.name,100),clean(row?.detail,450),url?link({url,label:'Official reference'}):null].filter(Boolean).join(' ');
-        }).filter(Boolean);
-        if(checks.length)parts.push('## How to verify the decision',...checks);
-      }
       const scenario=settlementExample(research,ticker,now);
       if(scenario)parts.push(scenario);
     }
