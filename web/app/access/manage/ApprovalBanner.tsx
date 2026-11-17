@@ -71,16 +71,16 @@ export default function ApprovalBanner({request, autoOpen = false, onDismiss, on
 
   useEffect(() => {
     if (expanded) return;
-    function clickOutside(event: globalThis.MouseEvent) {
-      if (compact.current && !event.composedPath().includes(compact.current)) dismiss();
+    function tapOutside(event: PointerEvent) {
+      if (event.isPrimary && event.button === 0 && compact.current && !event.composedPath().includes(compact.current)) dismiss();
     }
     function escape(event: KeyboardEvent) {
       if (event.key === 'Escape' && !event.defaultPrevented) dismiss();
     }
-    document.addEventListener('click', clickOutside);
+    document.addEventListener('pointerup', tapOutside);
     document.addEventListener('keydown', escape);
     return () => {
-      document.removeEventListener('click', clickOutside);
+      document.removeEventListener('pointerup', tapOutside);
       document.removeEventListener('keydown', escape);
     };
   }, [dismiss, expanded]);
