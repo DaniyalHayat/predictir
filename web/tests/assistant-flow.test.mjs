@@ -138,7 +138,7 @@ test('brief impeachment analysis separates historical House actions and reproduc
   assert.match(answer,/P\(YES\) is above 68\.55%/);
   assert.match(answer,/P\(YES\) is below 64\.43%/);
   assert.match(answer,/Dated House records/);
-  assert.ok(answer.includes('https://clerk.house.gov/Votes/2026298'));
+  assert.match(answer,/^\[September 15, 2026 roll call\]\(https:\/\/clerk\.house\.gov\/Votes\/2026298\) /m);
 });
 
 test('automatic Ask Why returns the selected settlement rule when depth and live reporting exceed their deadline',async t=>{
