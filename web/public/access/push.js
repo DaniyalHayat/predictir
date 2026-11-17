@@ -10,7 +10,7 @@ self.addEventListener('push', event => {
   try { notice = event.data?.json()?.notification; } catch {}
   const requestId = requestIdFrom(notice?.data?.requestId);
   const options = {
-    body: 'Tap to review. Approve or decline with a tap.',
+    body: 'A visitor requested access to Predictir. Tap to review.',
     tag: requestId ? 'predictir-access-' + requestId : 'predictir-access-request',
     icon: '/access/icon-192.png',
     data: {requestId},
@@ -18,7 +18,13 @@ self.addEventListener('push', event => {
   if (requestId && (self.Notification?.maxActions ?? 0) >= 2) {
     options.actions = [{action: 'approved', title: 'Approve'}, {action: 'declined', title: 'Decline'}];
   }
-  event.waitUntil(self.registration.showNotification('New Predictir access request', options));
+  event.waitUntil((async () => {
+    await self.registration.showNotification('Approval required', options);
+    const clients = await self.clients.matchAll({type: 'window', includeUncontrolled: true});
+    for (const client of clients) {
+      if (client.visibilityState === 'visible') client.postMessage({type: 'predictir-access-pending'});
+    }
+  })());
 });
 
 self.addEventListener('notificationclick', event => {
