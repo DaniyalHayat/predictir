@@ -11,3 +11,18 @@
 .quant-scenarios .execution-form>label{margin:14px 0}.quant-scenarios .execution-form>label input{width:100%}.quant-scenarios .execution-run{flex-wrap:wrap}
 .quant-scenarios caption{text-align:left;padding:12px 0}.quant-scenarios th[scope=row]{text-align:left}
 .azure-attribution{background:#0b0c0e;color:#cbd0d8;font-size:.75rem;padding:8px 20px}.azure-attribution a{color:inherit}
+
+.azure-replay {
+  --page: #090c12;
+  --panel: #141b2a;
+  --line: #333e55;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+}
+
+.azure-replay header {
+  background: linear-gradient(110deg, #1b253a, var(--page) 74%);
+}
+
+.azure-replay :is(.replay-score, .replay-status, .execution-result) {
+  border-radius: 16px;
+}

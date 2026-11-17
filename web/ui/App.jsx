@@ -1,7 +1,7 @@
 'use client';
 import {memo,useCallback,useEffect,useMemo,useReducer,useRef,useState} from 'react';
 import dynamic from 'next/dynamic';
-import {Activity,ArrowLeft,ArrowUpRight,Bitcoin,BookOpen,Check,ChevronDown,CloudSun,Database,ExternalLink,FlaskConical,Gavel,
+import {Activity,ArrowLeft,ArrowUpRight,Bitcoin,BookOpen,Check,ChevronDown,CloudSun,Compass,Database,ExternalLink,FlaskConical,Gavel,
   Leaf,Loader2,MessageSquare,Music2,Plane,RefreshCw,Search,Trophy,Landmark,X,Palette,ChartNoAxesCombined,Wallet,LayoutDashboard,UserRound,Bookmark} from 'lucide-react';
 import {api,openEventStream,cents,count,dollars,percent,dateLabel} from './api.mjs';
 import {initialSelection,selectionReducer,contractTitle,contractExchangeURL,refreshMarketRows} from './selection';
@@ -22,6 +22,21 @@ import usePositionReviews from './usePositionReviews.jsx';
 import './workspace.css';
 import './execution-lab.css';
 import './position-review.css';
+
+function locationMarket() {
+  const matches=new URLSearchParams(window.location.search).getAll('market');
+  const ticker=matches.length===1?matches[0]:'';
+  return /^[A-Za-z0-9_.-]{1,140}$/.test(ticker)&&ticker!=='.'&&!ticker.includes('..')?ticker:'';
+}
+
+function recordMarketLocation(ticker) {
+  if(locationMarket()===ticker)return;
+  const url=new URL(window.location.href);
+  if(ticker)url.searchParams.set('market',ticker);
+  else url.searchParams.delete('market');
+  window.history.pushState(window.history.state,'',url);
+}
+
 const Chart=dynamic(()=>import('./Chart'),{loading:()=> <div className="chart" role="status"><div className="chart-empty">Loading price history…</div></div>});
 const Portfolio=dynamic(()=>import('./Portfolio.jsx'),{loading:()=> <div className="workspace-empty" role="status">Loading portfolio…</div>});
 const Recommendations=dynamic(()=>import('./Recommendations.jsx'),{loading:()=> <div className="workspace-empty" role="status">Loading research screen…</div>});
@@ -34,19 +49,30 @@ const marketPageSize=48;
 const autoSelectionDelayMs=400;
 const noPositions=[];
 
-const categories=[['sports','Sports',Trophy],['politics','Politics',Gavel],['macro','Economy',Landmark],['crypto','Crypto',Bitcoin],['travel','Travel',Plane],
+const categories=[['discover','Discover',Compass],['sports','Sports',Trophy],['politics','Politics',Gavel],['macro','Economy',Landmark],['crypto','Crypto',Bitcoin],['travel','Travel',Plane],
   ['weather','Weather',CloudSun],['science','Tech & science',FlaskConical],['climate','Climate',Leaf],['culture','Culture',Music2]];
 const safeURL=value=>{try{const url=new URL(value);return url.protocol==='https:'&&!url.username&&!url.password?url.href:null;}catch{return null;}};
+function bestBid(levels=[]){
+  let best=null;
+  for(const [price,quantity] of levels||[]){
+    const bid=Number(price);
+    if(Number(quantity)>0&&bid>=0&&bid<=1&&(best===null||bid>best))best=bid;
+  }
+  return best;
+}
 function AskWhy({panel,onAsk,label}){
   return <button type="button" className="text-button" onClick={()=>onAsk(panel)} aria-label={'Ask why about '+label}>Ask why <ArrowUpRight size={14}/></button>;
 }
 
-const MarketRow=memo(function MarketRow({row,selected,opinion,onSelect,onResearch,livePrices}) {
+const MarketRow=memo(function MarketRow({row,selected,opinion,onSelect,onResearch,livePrices,quotesExpired}) {
   const side=opinion?.side;
+  const listPrice=quote=>quotesExpired?null:quote;
+  const noAsk=row.no_ask??(Number.isFinite(row.yes_bid)?1-row.yes_bid:null);
+  const observed=livePrices?.asOf||row.quote_as_of;
   return <div className={'market-row '+(selected?'selected':'')} data-market-ticker={row.ticker}>
     <button className="market-select" data-analytics-market={row.ticker} data-analytics-category={row.category} onClick={()=>onSelect(row)} aria-label={'Open '+contractTitle(row)} aria-current={selected?'true':undefined}>
       <div><span className="row-series">{row.series||row.ticker.split('-')[0]}</span><h2>{contractTitle(row)}</h2>{row.event_ticker&&<small className="row-event">Event {row.event_ticker}</small>}<small>{count(row.volume_24h)} 24h contracts · closes {dateLabel(row.close_time)}</small></div>
-      <div className="row-prices"><strong>{cents(livePrices?livePrices.yes:row.yes_ask)}</strong><span>{livePrices?cents(livePrices.no):Number.isFinite(row.yes_bid)?cents(1-row.yes_bid):'—'}</span></div>
+      <div className="row-prices" title={observed?'Kalshi order book observed '+new Date(observed).toLocaleString():undefined}><strong>{cents(livePrices?livePrices.yes:listPrice(row.yes_ask))}</strong><span>{cents(livePrices?livePrices.no:listPrice(noAsk))}</span></div>
     </button>
     <button className="row-opinion" onClick={()=>onResearch(row)} title={opinion?.reason||'Open the research view for model coverage and evidence gaps.'} aria-label={'Research view for '+contractTitle(row)+(side?': '+side:'')}>
       <span className={'verdict '+(side?.toLowerCase()||'unchecked')}>{side||'Check'}</span><span>View research <ArrowUpRight size={12}/></span>
@@ -109,16 +135,15 @@ function Research({value,loading,onAssistant,onPaper,onModelEvidence,history,now
   const replayLink=['/research/weekly-tsa.json','/research/crypto-minute.json'].includes(replay)?replay:null;
   const setups=(value.paper_scenarios||[]).filter(row=>screenFreshness(row,{now,error:value.error}).current).sort((a,b)=>
     (b.point_edge??-Infinity)-(a.point_edge??-Infinity)||(a.required_edge??Infinity)-(b.required_edge??Infinity));
-  const label=side==='PASS'?(setups.some(row=>row.scenario_eligible)?'Paper idea':'Compare sides'):side;
-  const opinion=<div className={'opinion-card '+side.toLowerCase()}><div className="section-title"><h3>{compact?'Entry check':'Outcome research'}</h3><span className={'verdict '+(side==='PASS'?'unchecked':side.toLowerCase())}>{label}</span></div>
-    <p>{stale?'Checking current model inputs and depth.':forecast?.outcomes?value.summary:Number.isFinite(forecast?.probability)?(value.summary||value.opinion?.reason):'Compare YES and NO entry prices with the payout needed to make each paper trade worthwhile.'}</p>
+  const opinion=<div className={'opinion-card '+side.toLowerCase()}><div className="section-title"><h3>{compact?'Entry check':'Outcome research'}</h3><span className={'verdict '+(side==='PASS'?'unchecked':side.toLowerCase())}>{side}</span></div>
+    <p>{stale?'Checking current model inputs and depth.':side==='PASS'&&screen?.reason?screen.reason:forecast?.outcomes?value.summary:Number.isFinite(forecast?.probability)?(value.summary||value.opinion?.reason):'Compare YES and NO entry prices with the payout needed to make each paper trade worthwhile.'}</p>
     {!stale&&Number.isFinite(forecast?.probability)&&<div className="model-numbers"><div><small>{forecast.outcomes?'YES team win chance':lineup?'Baseline P(YES)':forecast.evidence?.tier===1?'Scenario P(YES)':'Independent P(YES)'}</small><strong>{percent(forecast.probability)}</strong></div><div><small>{forecast.outcomes?'Tie chance':lineup?'Decision range':forecast.evidence?.tier===1?'Sensitivity range':'Model range'}</small><strong>{forecast.outcomes?percent(forecast.outcomes.tie):forecast.interval?.map(percent).join(' – ')||'Unavailable'}</strong></div><div><small>{forecast.outcomes?'Expected YES payout':'Evidence'}</small><strong>{forecast.outcomes?cents(forecast.expected_settlement_value):forecast.evidence?.label||'Research scenario'}</strong></div></div>}
     {!stale&&lineup&&<p><strong>Lineup check.</strong> {lineup.name} is listed {lineup.status.toLowerCase()}. Stress-testing the absence gives {percent(lineup.conditional_probability)} YES. The paper screen checks the decision range against costs. {availabilityLink&&<a href={availabilityLink} target="_blank" rel="noreferrer">See the game report</a>}</p>}
     {!stale&&replayLink&&<p className="footnote"><a href={replayLink} target="_blank" rel="noreferrer">View settled-contract backtest</a></p>}
     <small className="screen-stamp">Checked {dateLabel(value.as_of)}</small><button className="text-button" onClick={()=>onAssistant('analysis',{detail:readMode==='long'?'full':'brief'})} aria-label="Ask why about this analysis">Ask why <ArrowUpRight size={14}/></button></div>;
-  const paper=setups.length>0&&<section className="method"><div className="section-title"><h3>Trade a $20 paper scenario</h3><small>Fees and visible depth included</small></div><div className="scenario-comparison">{setups.map(row=><div key={row.side}><small>{row.side} · {count(row.contracts)} contracts</small><strong>{cents(row.break_even)} all-in per contract</strong><span>{dollars(row.cost)} entry · {dollars(row.win_value)} balance at full payout</span>
-    <span>{Number.isFinite(row.expected_profit)?`${dollars(row.expected_profit)} model expected P/L`:Number.isFinite(row.required_edge)?`Needs ${cents(row.required_edge)} above the quote midpoint to break even`:'A two-sided quote is needed to compare the midpoint.'}</span>
-    {Number.isFinite(row.tie_value)&&<span>{dollars(row.tie_value)} balance on a tie</span>}<button className="text-button" onClick={()=>onPaper(row)}>{row.scenario_eligible?'Try':'Compare'} {row.side} in Paper <ArrowUpRight size={14}/></button></div>)}</div></section>;
+  const paper=setups.length>0&&<section className="method"><div className="section-title"><h3>Compare $20 paper scenarios</h3><small>Fees and visible depth included</small></div>{side==='PASS'&&<p className="footnote">The current research screen supports zero contracts. Use these comparisons to inspect costs.</p>}<div className="scenario-comparison">{setups.map(row=><div key={row.side}><small>{row.side} · {count(row.contracts)} contracts</small><strong>{cents(row.break_even)} all-in per contract</strong><span>{dollars(row.cost)} entry · {dollars(row.win_value)} balance at full payout</span>
+    <span>{side!=='PASS'&&Number.isFinite(row.expected_profit)?`${dollars(row.expected_profit)} P/L at the model point estimate`:Number.isFinite(row.required_edge)?`Needs ${cents(row.required_edge)} above the quote midpoint to break even`:'A two-sided quote is needed to compare the midpoint.'}</span>
+    {Number.isFinite(row.tie_value)&&<span>{dollars(row.tie_value)} balance on a tie</span>}<button className="text-button" onClick={()=>onPaper(row)}>Compare {row.side} in Paper <ArrowUpRight size={14}/></button></div>)}</div></section>;
   const path=<PricePath signal={history?.market_signal} now={now}/>;
   if(compact)return <>{opinion}{paper}{path}</>;
   const diagnostic=value.settlement_diagnostic;
@@ -177,7 +202,7 @@ function MarketAttribution({value}) {
 export default function App({paperWorkspace=false}={}) {
   const account=useAccount();
   const paperLedger=usePaperLedger();
-  const [category,setCategory]=useState('sports'),[markets,setMarkets]=useState([]),[query,setQuery]=useState(''),[listLabel,setListLabel]=useState('Sports'),
+  const [category,setCategory]=useState('discover'),[markets,setMarkets]=useState([]),[query,setQuery]=useState(''),[listLabel,setListLabel]=useState('Discover'),
     [listLoading,setListLoading]=useState(true),[listError,setListError]=useState(''),[coverage,setCoverage]=useState(null),[rowLimit,setRowLimit]=useState(marketPageSize),
     [selection,dispatch]=useReducer(selectionReducer,initialSelection),[history,setHistory]=useState(null),[tab,setTab]=useState('overview'),
     [researchPending,setResearchLoading]=useState(false),[streamStatus,setStreamStatus]=useState('Connecting'),[paused,setPaused]=useState(false),
@@ -187,22 +212,51 @@ export default function App({paperWorkspace=false}={}) {
     [preferenceError,setPreferenceError]=useState(false),[paperPreset,setPaperPreset]=useState(null),[navigationError,setNavigationError]=useState(''),
     [archiveOpen,setArchiveOpen]=useState(false),[archiveResult,setArchiveResult]=useState(null),[archiveError,setArchiveError]=useState(''),[archiveQuery,setArchiveQuery]=useState(''),[accountOpen,setAccountOpen]=useState(false),[executionContext,setExecutionContext]=useState(null);
   const search=useRef(null),listIntent=useRef(0),listRoot=useRef(null),lookupRequest=useRef(null),archiveRequest=useRef(null),assistantSequence=useRef(0);
+  const restoringMarket=useRef(null),marketRows=useRef(markets);
+  marketRows.current=markets;
   const refreshAfterEvidence=useRef(null);
+  const isDiscovery=category==='discover'&&listLabel!=='Opened from link';
+  const quotesExpired=isDiscovery&&clock-Date.parse(coverage?.as_of)>90000;
   const requestModelRefresh=useCallback(ticker=>refreshAfterEvidence.current?.(ticker),[]);
   const reviews=usePositionReviews(paperLedger.ledger?.positions||noPositions,preferences.model,paperLedger);
   const activeView=useRef(view);activeView.current=view;
   const closed=Boolean(selection.market&&(['closed','settled','finalized'].includes(selection.market.status)||Date.parse(selection.market.close_time)<=clock));
   const researchLoading=selection.provisional||researchPending;
-  const select=useCallback((market,{openDetail=true,provisional=false}={})=>{listIntent.current++;dispatch({type:'select',market,provisional});setAssistant(false);setHistory(null);setTab('overview');setStreamStatus('Loading quote');setPaused(false);setMobileDetail(openDetail);},[]);
-  const openMarket=useCallback(market=>{setView('markets');setPaperPreset(null);select(market);},[select]);
+  const select=useCallback((market,{openDetail=true,provisional=false,fromHistory=false}={})=>{if(!fromHistory)listIntent.current++;dispatch({type:'select',market,provisional});setAssistant(false);setHistory(null);setTab('overview');setStreamStatus('Loading quote');setPaused(false);setMobileDetail(openDetail);},[]);
+  const openMarket=useCallback(market=>{restoringMarket.current?.abort();recordMarketLocation(market.ticker);setView('markets');setPaperPreset(null);select(market);},[select]);
   const selectResearch=useCallback(market=>{openMarket(market);setTab('research');},[openMarket]);
-  function changeCategory(id){setMobileDetail(false);if(view==='portfolio')setView('markets');if(id===category)return;lookupRequest.current?.abort();listIntent.current++;dispatch({type:'clear'});setHistory(null);setCoverage(null);setResearchLoading(false);setAssistant(false);setPaperPreset(null);setMarkets([]);setQuery('');setRowLimit(marketPageSize);setCategory(id);}
+  function showMarkets(){restoringMarket.current?.abort();recordMarketLocation('');setMobileDetail(false);}
+  function changeCategory(id){showMarkets();if(view==='portfolio'||id==='discover')setView('markets');if(id===category)return;lookupRequest.current?.abort();listIntent.current++;dispatch({type:'clear'});setHistory(null);setCoverage(null);setResearchLoading(false);setAssistant(false);setPaperPreset(null);setMarkets([]);setQuery('');setRowLimit(marketPageSize);setCategory(id);}
   function updatePreferences(value){const next=appearance(value);if(next.model!==preferences.model)setAssistant(false);setPreferences(next);try{localStorage.setItem(PREFERENCE_KEY,JSON.stringify(next));setPreferenceError(false);}catch{setPreferenceError(true);}}
   useEffect(()=>{try{migratePredictirStorage(localStorage);setPreferences(appearance(localStorage.getItem(PREFERENCE_KEY)));}catch{setPreferenceError(true);}},[]);
   useEffect(()=>{document.documentElement.dataset.theme=preferences.theme;},[preferences.theme]);
+  useEffect(()=>{
+    async function restore(){
+      restoringMarket.current?.abort();
+      lookupRequest.current?.abort();
+      const ticker=locationMarket();
+      if(!ticker){setMobileDetail(false);return;}
+      setView('markets');setPaperPreset(null);setNavigationError('');
+      const listed=marketRows.current.find(row=>row.ticker===ticker);
+      if(listed){select(listed,{fromHistory:true});return;}
+      const controller=new AbortController();
+      restoringMarket.current=controller;
+      try{
+        const value=await api('/api/workspace/context?ticker='+encodeURIComponent(ticker),{signal:controller.signal});
+        if(controller.signal.aborted)return;
+        if(value.market?.ticker!==ticker)throw new Error('Could not verify the linked contract.');
+        select(value.market,{fromHistory:true});
+      }catch(error){
+        if(!controller.signal.aborted)setNavigationError(error.message);
+      }
+    }
+    void restore();
+    window.addEventListener('popstate',restore);
+    return ()=>{restoringMarket.current?.abort();window.removeEventListener('popstate',restore);};
+  },[select]);
   useEffect(()=>{const id=setInterval(()=>{if(!document.hidden&&activeView.current!=='ranked')setClock(Date.now());},1000);const key=e=>{if(e.key==='Escape'){setAssistant(false);setJournal(false);setSources(false);setAppearanceOpen(false);setArchiveOpen(false);}if(e.key==='/'&&!['INPUT','TEXTAREA'].includes(document.activeElement?.tagName)&&!document.querySelector('.overlay,.assistant-panel')){e.preventDefault();setView('markets');setMobileDetail(false);requestAnimationFrame(()=>search.current?.focus());}};document.addEventListener('keydown',key);return()=>{clearInterval(id);document.removeEventListener('keydown',key);lookupRequest.current?.abort();};},[]);
   useEffect(()=>{
-    const controller=new AbortController(),intent=listIntent.current,keepSelection=Boolean(selection.ticker&&listLabel!=='Opened from link');
+    const controller=new AbortController(),intent=listIntent.current,keepSelection=Boolean(locationMarket()||selection.ticker&&listLabel!=='Opened from link');
     setListLoading(true);setListError('');setListLabel(categories.find(c=>c[0]===category)[1]);
     api('/api/workspace/markets?category='+category,{signal:controller.signal,timeoutMs:20000}).then(value=>{
       if(controller.signal.aborted||intent!==listIntent.current)return;
@@ -216,9 +270,9 @@ export default function App({paperWorkspace=false}={}) {
     const refresh=async()=>{if(document.hidden||busy)return;busy=true;const intent=listIntent.current;
       try{const value=await api('/api/workspace/markets?category='+category,{signal:controller.signal,timeoutMs:20000});if(!controller.signal.aborted&&intent===listIntent.current){setMarkets(current=>refreshMarketRows(current,value.markets));setCoverage(value);setListError('');if(!selection.ticker&&value.markets.length)select(value.markets[0],{openDetail:false,provisional:true});}}
       catch{}finally{busy=false;}};
-    const timer=setInterval(refresh,coverage?.stale?8000:listError?30000:60000);document.addEventListener('visibilitychange',refresh);
+    const timer=setInterval(refresh,coverage?.stale?8000:listError||isDiscovery?30000:60000);document.addEventListener('visibilitychange',refresh);
     return()=>{controller.abort();clearInterval(timer);document.removeEventListener('visibilitychange',refresh);};
-  },[category,view,listLoading,listLabel,coverage?.stale,listError,selection.ticker,select]);
+  },[category,view,listLoading,listLabel,coverage?.stale,listError,isDiscovery,selection.ticker,select]);
   useEffect(()=>{
     const {ticker,generation,provisional}=selection;
     if(!ticker||!provisional||view!=='markets')return;
@@ -267,10 +321,10 @@ export default function App({paperWorkspace=false}={}) {
     return()=>{stopped=true;controller.abort();stream?.close();clearInterval(interval);clearTimeout(retryTimer);document.removeEventListener('visibilitychange',visible);};
   },[selection.ticker,selection.generation,selection.provisional,paused,closed,view]);
   async function lookup(event){event.preventDefault();if(!/^https:\/\/|^[A-Z0-9_.]+-[A-Z0-9_.-]+$/i.test(query.trim()))return;
-    lookupRequest.current?.abort();const controller=new AbortController(),intent=++listIntent.current;lookupRequest.current=controller;
+    restoringMarket.current?.abort();lookupRequest.current?.abort();const controller=new AbortController(),intent=++listIntent.current;lookupRequest.current=controller;
     setListLoading(true);setListError('');dispatch({type:'clear'});setHistory(null);
     try{const value=await api('/api/resolve?q='+encodeURIComponent(query.trim()),{signal:controller.signal});if(controller.signal.aborted||intent!==listIntent.current)return;
-      setMarkets(value.contracts);setListLabel('Opened from link');setCoverage(null);if(value.contracts.length)select(value.contracts[0]);else setListError('No matching open contracts were returned.');
+      setMarkets(value.contracts);setListLabel('Opened from link');setCoverage(null);if(value.contracts.length)openMarket(value.contracts[0]);else setListError('No matching open contracts were returned.');
     }catch(e){if(e.name!=='AbortError'&&intent===listIntent.current)setListError(e.message);}finally{if(!controller.signal.aborted&&lookupRequest.current===controller)setListLoading(false);}}
   const filtered=useMemo(()=>{const q=query.toLowerCase().trim();if(!q||/^https:\/\//.test(q))return markets;return markets.filter(m=>[contractTitle(m),m.ticker,m.event_ticker].some(text=>text?.toLowerCase().includes(q)));},[markets,query]);
   const displayed=useMemo(()=>filtered.slice(0,rowLimit),[filtered,rowLimit]);
@@ -299,8 +353,9 @@ export default function App({paperWorkspace=false}={}) {
     if(!signal.aborted)dispatch({type:'book',ticker,generation,value:{...value,transport:'public-rest-snapshot'}});
   }
   const eventTitle=selectedResearch?.event?.title,scheduledAt=selectedResearch?.extensions?.sports?.event?.played_at;
-  const bid=fp?.yes_dollars?.length?Math.max(...fp.yes_dollars.map(row=>Number(row[0]))):null,ask=fp?.no_dollars?.length?1-Math.max(...fp.no_dollars.map(row=>Number(row[0]))):null;
+  const bid=bestBid(fp?.yes_dollars),noBid=bestBid(fp?.no_dollars),ask=noBid===null?null:1-noBid;
   const age=book?Math.max(0,Math.floor((clock-Date.parse(book.as_of))/1000)):null;
+  const listBook=age!==null&&age<=90?{yes:ask,no:bid===null?null:1-bid,asOf:book.as_of}:null;
   async function openSources(){setSourceStatus(null);setAttribution(null);setSources(true);
     await Promise.all([api('/api/workspace/sources').then(setSourceStatus).catch(e=>setSourceStatus({error:e.message})),
       api('/api/workspace/attribution').then(setAttribution).catch(e=>setAttribution({error:e.message}))]);}
@@ -311,12 +366,13 @@ export default function App({paperWorkspace=false}={}) {
     setTab('paper');
   }
   async function openFromWorkspace(row,budget){
-    lookupRequest.current?.abort();const controller=new AbortController(),intent=++listIntent.current;lookupRequest.current=controller;setNavigationError('');
+    restoringMarket.current?.abort();lookupRequest.current?.abort();const controller=new AbortController(),intent=++listIntent.current;lookupRequest.current=controller;setNavigationError('');
     const value=await api('/api/workspace/context?ticker='+encodeURIComponent(row.ticker),{signal:controller.signal});
     if(controller.signal.aborted||intent!==listIntent.current)return;
+    if(value.market?.ticker!==row.ticker)throw new Error('Could not verify the linked contract.');
     if(categories.some(([id])=>id===value.market.category))setCategory(value.market.category);
     setQuery('');setRowLimit(marketPageSize);
-    setView('markets');select(value.market);setPaperPreset(Number.isFinite(budget)&&row.contracts>0?{ticker:row.ticker,side:String(row.side).toLowerCase(),quantity:row.contracts,budget,
+    recordMarketLocation(row.ticker);setView('markets');select(value.market);setPaperPreset(Number.isFinite(budget)&&row.contracts>0?{ticker:row.ticker,side:String(row.side).toLowerCase(),quantity:row.contracts,budget,
       probability:row.probability_yes,interval:row.interval_yes,model:row.model,as_of:row.source_as_of,source:row.experimental?'experimental_model':'model_scenario'}:null);setTab(Number.isFinite(budget)&&row.contracts>0?'paper':'research');
   }
   async function openRecommendation(row,budget){try{await openFromWorkspace(row,budget);}catch(error){if(error.name!=='AbortError')setNavigationError(error.message);}}
@@ -334,14 +390,28 @@ export default function App({paperWorkspace=false}={}) {
       {reviews.alerts.length>0&&<div aria-label="Paper position alerts" role="status">{reviews.alerts.map(alert=><div className="position-alert" key={alert.id}>
         <strong>Paper SELL signal</strong><span>{alert.title} · {alert.reason}</span><button className="text-button" onClick={()=>setView('portfolio')}>My Trades</button>
         <button className="text-button" onClick={()=>reviews.dismiss(alert.id)}>Dismiss</button></div>)}</div>}
-      {view==='ranked'?<Recommendations category={category} categoryName={categories.find(row=>row[0]===category)?.[1]} model={preferences.model} onOpen={openRecommendation}/>:view==='portfolio'?<Portfolio paperLedger={paperLedger} reviews={reviews} onOpen={openFromWorkspace} onMarkets={()=>setView('markets')} clock={clock} model={preferences.model} theme={preferences.theme}/>:<div className="workspace-columns"><section className="market-list" aria-label="Market list"><div className="market-list-heading"><div><h1>{listLabel}</h1><span>{listLoading?'Loading contracts…':`${filtered.length} ${filtered.length===1?'contract':'contracts'}`}</span></div><button className="icon-button" aria-label="Refresh market list" onClick={()=>setListRevision(v=>v+1)} disabled={listLoading}><RefreshCw size={17} className={listLoading?'spin':''}/></button></div>
+      {view==='ranked'?<Recommendations category={category==='discover'?'sports':category} categoryName={category==='discover'?'Sports':categories.find(row=>row[0]===category)?.[1]} model={preferences.model} onOpen={openRecommendation}/>:view==='portfolio'?<Portfolio paperLedger={paperLedger} reviews={reviews} onOpen={openFromWorkspace} onMarkets={()=>setView('markets')} clock={clock} model={preferences.model} theme={preferences.theme}/>:<div className="workspace-columns"><section className="market-list" aria-label="Market list">
+        <div className="market-list-heading">
+          <div><h1>{listLabel}</h1><span role="status">{listLoading?'Loading contracts…':`${filtered.length} ${filtered.length===1?'contract':'contracts'}`}</span></div>
+          <button className="icon-button" aria-label={isDiscovery?'Shuffle markets':'Refresh market list'} title={isDiscovery?'Shuffle markets':'Refresh market list'} aria-disabled={listLoading} onClick={()=>{if(!listLoading)setListRevision(v=>v+1);}}><RefreshCw size={17} className={listLoading?'spin':''}/></button>
+        </div>
         <form className="market-search" onSubmit={lookup}><Search size={17}/><label className="sr-only" htmlFor="market-search">Search contracts. Press Enter to open an exchange link or ticker.</label><input id="market-search" ref={search} value={query} onChange={e=>{setQuery(e.target.value);setRowLimit(marketPageSize);}} placeholder="Search or paste a link and press Enter"/><kbd>/</kbd></form>
-        <div className="list-columns"><span>Contract</span><span>YES / NO</span></div>
-        <div className="market-rows" ref={listRoot} aria-busy={listLoading&&!displayed.length}>{listError&&<div className="notice error" role="alert">{listError}<button className="text-button" onClick={()=>setListRevision(v=>v+1)}>Try again</button></div>}{listLoading&&!displayed.length&&<div className="list-loading" role="status"><Loader2 size={18} className="spin"/><span>Loading exchange contracts</span></div>}{displayed.map(row=><MarketRow key={row.ticker} row={row} selected={row.ticker===selection.ticker} livePrices={row.ticker===selection.ticker?{yes:ask,no:bid===null?null:1-bid}:null} opinion={row.ticker===selection.ticker?selectedOpinion||opinions[row.ticker]:opinions[row.ticker]} onSelect={openMarket} onResearch={selectResearch}/>)}{displayed.length<filtered.length&&<button className="text-button" onClick={()=>setRowLimit(limit=>limit+marketPageSize)}>Show more contracts</button>}{!listLoading&&!filtered.length&&!listError&&<div className="empty">No matching contracts in this sample. Try another category or paste an exact exchange URL.{query.trim().length>=2&&<button className="text-button" onClick={searchArchive}>Search observed history <ArrowUpRight size={13}/></button>}</div>}</div>
-        <div className="list-footer" title={'Catalog checked '+dateLabel(coverage?.as_of)+'; refreshes once a minute while visible.'}><span className="status-dot"/>{coverage?.stale?'Showing last snapshot':'Catalog snapshot'}{coverage?.partial&&<span>Partial coverage</span>}<button className="text-button" onClick={openSources}>Coverage</button></div>
+        <div className="list-columns"><span>Contract</span><span>YES / NO asks</span></div>
+        <div className="market-rows" ref={listRoot} aria-busy={listLoading&&!displayed.length}>
+          {listError&&<div className="notice error" role="alert">{listError}<button className="text-button" onClick={()=>setListRevision(v=>v+1)}>Try again</button></div>}
+          {listLoading&&!displayed.length&&<div className="list-loading"><Loader2 size={18} className="spin"/><span>Loading exchange contracts</span></div>}
+          {displayed.map(row=>{
+            const selected=row.ticker===selection.ticker;
+            const livePrices=selected&&listBook&&(!row.quote_as_of||Date.parse(listBook.asOf)>=Date.parse(row.quote_as_of))?listBook:null;
+            return <MarketRow key={row.ticker} row={row} selected={selected} livePrices={livePrices} quotesExpired={quotesExpired} opinion={selected?selectedOpinion||opinions[row.ticker]:opinions[row.ticker]} onSelect={openMarket} onResearch={selectResearch}/>;
+          })}
+          {displayed.length<filtered.length&&<button className="text-button" onClick={()=>setRowLimit(limit=>limit+marketPageSize)}>Show more contracts</button>}
+          {!listLoading&&!filtered.length&&!listError&&<div className="empty">No matching contracts in this sample. Try another category or paste an exact exchange URL.{query.trim().length>=2&&<button className="text-button" onClick={searchArchive}>Search observed history <ArrowUpRight size={13}/></button>}</div>}
+        </div>
+        <div className="list-footer" title={`${coverage?.scope||'Catalog snapshot'} Checked ${dateLabel(coverage?.as_of)}.`}><span className="status-dot"/>{quotesExpired?'Quotes need refresh':coverage?.stale?'Showing last snapshot':isDiscovery?'Kalshi book quotes':'Catalog snapshot'}{coverage?.partial&&<span>Partial coverage</span>}<button className="text-button" onClick={openSources}>Coverage</button></div>
       </section>
       <section className="contract-panel" id="contract-content" aria-label="Selected contract">{market?<>
-        <div className="contract-heading"><button className="mobile-back text-button" onClick={()=>setMobileDetail(false)}><ArrowLeft size={16}/>Markets</button><div className="contract-meta"><span>{categories.find(c=>c[0]===market.category)?.[1]||listLabel}</span><span>Trading closes {dateLabel(market.close_time)}</span></div><h2 data-testid="selected-title">{contractTitle(market)}</h2>{eventTitle&&eventTitle!==contractTitle(market)&&<p className="contract-event" data-testid="selected-event">{eventTitle}</p>}{scheduledAt&&Number.isFinite(Date.parse(scheduledAt))&&<p className="contract-schedule">Scheduled <time dateTime={scheduledAt}>{new Date(scheduledAt).toLocaleString(undefined,{year:'numeric',month:'short',day:'numeric',hour:'numeric',minute:'2-digit',timeZoneName:'short'})}</time></p>}<div className="contract-identity"><code data-testid="selected-ticker">{market.ticker}</code><div className="contract-links"><button className="text-button save-market" aria-pressed={account.watchlist.includes(market.ticker)} disabled={account.status!=='ready'} onClick={()=>{try{toggleSavedMarket(market.ticker);}catch(error){setNavigationError(error.message);}}}><Bookmark size={13}/>{account.watchlist.includes(market.ticker)?'Saved':'Save'}</button><a href={contractExchangeURL(market,selectedResearch?.series)} target="_blank" rel="noreferrer">View exchange <ArrowUpRight size={13}/></a></div></div></div>
+        <div className="contract-heading"><button className="mobile-back text-button" onClick={showMarkets}><ArrowLeft size={16}/>Markets</button><div className="contract-meta"><span>{categories.find(c=>c[0]===market.category)?.[1]||listLabel}</span><span>Trading closes {dateLabel(market.close_time)}</span></div><h2 data-testid="selected-title">{contractTitle(market)}</h2>{eventTitle&&eventTitle!==contractTitle(market)&&<p className="contract-event" data-testid="selected-event">{eventTitle}</p>}{scheduledAt&&Number.isFinite(Date.parse(scheduledAt))&&<p className="contract-schedule">Scheduled <time dateTime={scheduledAt}>{new Date(scheduledAt).toLocaleString(undefined,{year:'numeric',month:'short',day:'numeric',hour:'numeric',minute:'2-digit',timeZoneName:'short'})}</time></p>}<div className="contract-identity"><code data-testid="selected-ticker">{market.ticker}</code><div className="contract-links"><button className="text-button save-market" aria-pressed={account.watchlist.includes(market.ticker)} disabled={account.status!=='ready'} onClick={()=>{try{toggleSavedMarket(market.ticker);}catch(error){setNavigationError(error.message);}}}><Bookmark size={13}/>{account.watchlist.includes(market.ticker)?'Saved':'Save'}</button><a href={contractExchangeURL(market,selectedResearch?.series)} target="_blank" rel="noreferrer">View exchange <ArrowUpRight size={13}/></a></div></div></div>
         <div className="quote-strip"><div><small>YES ask</small><strong className="yes-price">{cents(ask)}</strong></div><div><small>NO ask</small><strong className="no-price">{bid===null?'—':cents(1-bid)}</strong></div><div><small>YES spread</small><strong>{bid===null||ask===null?'—':cents(ask-bid)}</strong></div><button className="stream-state" onClick={()=>setPaused(v=>!v)} aria-pressed={paused}><span className={'status-dot '+(age===null||age>90||paused||closed?'delayed':'')}/><span>{closed?'Closed':paused?'Stream paused':streamStatus}<small>{age===null?'Waiting for quote':`${age}s since observation`}</small></span><ChevronDown size={14}/></button></div>
         <QuoteComparison bid={bid} ask={ask} age={age} forecast={selectedResearch?.forecast} stale={Boolean(selectedOpinion?.stale)} loading={researchLoading}/>
         {selection.error&&<div className="notice error" role="alert">{selection.error}</div>}

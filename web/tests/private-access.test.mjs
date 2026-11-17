@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import {createHash,randomBytes} from 'node:crypto';
 import {SHARE_COOKIE,SHARE_COOKIE_SECONDS,CANARY_COOKIE,CANARY_COOKIE_SECONDS,redeemShareAccess,logoutShareAccess,
   shareCookieAuthorized,shareAccessKind,privateAccessResponse,publicAccessPath,issueApprovedShareCookie,
-  renewApprovedShareCookie,shareHeaderForBackend} from '../lib/private-access.mjs';
+  renewApprovedShareCookie,shareHeaderForBackend,previewSessionResponse} from '../lib/private-access.mjs';
 import {BROWSER_IDLE_SECONDS,BROWSER_MAX_SECONDS} from '../lib/browser-session.mjs';
 import {proxyBackend} from '../lib/workspace/proxy.mjs';
 import {assistantResponse} from '../lib/workspace/assistant.mjs';
@@ -83,6 +83,25 @@ test('approved browsers keep access when opening an invite and a late renewal ca
   assert.equal(shareAccessKind(renewed+'; '+marker,env,later),null);
   const different=pair(issueApprovedShareCookie(env,now,now/1000+SHARE_COOKIE_SECONDS,hash('another-browser')));
   assert.equal(shareAccessKind(different+'; '+marker,env,later),'share');
+});
+
+test('preview status revalidates the current host cookie independently of manual access requests',async()=>{
+  const pair=value=>value.split(';',1)[0];
+  const approved=pair(issueApprovedShareCookie(env,now,now/1000+SHARE_COOKIE_SECONDS,hash('history-session')));
+  const get=(cookie='',site='same-origin')=>new Request('https://predictir.dev/api/access/session',{headers:{Cookie:cookie,'Sec-Fetch-Site':site}});
+  const tomorrow=now+86400000;
+  const current=previewSessionResponse(get(approved),env,tomorrow);
+  assert.equal(current.status,204);
+  assert.equal(current.headers.get('cache-control'),'private, no-store');
+  assert.equal(current.headers.get('vary'),'Cookie');
+  const renewed=pair(current.headers.get('set-cookie'));
+  assert.equal(previewSessionResponse(get(renewed),env,now+BROWSER_IDLE_SECONDS*1000).status,204);
+  assert.equal(previewSessionResponse(get(approved),env,now+BROWSER_IDLE_SECONDS*1000).status,401);
+  assert.equal(previewSessionResponse(get(),env,now).status,401);
+  assert.equal(previewSessionResponse(get(approved,'same-site'),env,now).status,403);
+  const logout=await logoutShareAccess(new Request('https://predictir.dev/api/access/logout',{method:'POST',headers:{Origin:'https://predictir.dev',Cookie:approved}}),{env,now:tomorrow});
+  const marker=pair(logout.headers.getSetCookie()[1]);
+  assert.equal(previewSessionResponse(get(renewed+'; '+marker),env,tomorrow).status,401);
 });
 
 test('missing configuration fails closed and redemption rejects CSRF, query-token delivery and oversized bodies',async()=>{
@@ -179,8 +198,8 @@ test('backend direct entry, API and forged edge claims are blocked while readine
 });
 
 test('public paths are limited to bootstrap, static framework assets, readiness and exact ownership files',()=>{
-  for(const path of ['/access','/api/access/redeem','/healthz','/google7653305cfae6f81b.html','/hibp-verification.txt','/_next/static/a.js'])assert.equal(publicAccessPath(path),true,path);
-  for(const path of ['/','/api/session','/lab.html','/research/research-audit.pdf','/_next/image','/access/other','/hibp-verification.txt/other'])assert.equal(publicAccessPath(path),false,path);
+  for(const path of ['/privacy','/access','/api/access/redeem','/api/access/session','/api/access/google/start','/api/access/google/callback','/healthz','/google7653305cfae6f81b.html','/hibp-verification.txt','/_next/static/a.js'])assert.equal(publicAccessPath(path),true,path);
+  for(const path of ['/','/api/session','/api/access/google/other','/api/access/session/other','/lab.html','/research/research-audit.pdf','/_next/image','/access/other','/hibp-verification.txt/other'])assert.equal(publicAccessPath(path),false,path);
 });
 
 test('dedicated canary cookie expires and rotates independently of recruiter access',async()=>{

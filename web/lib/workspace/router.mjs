@@ -4,6 +4,7 @@ import {marketFees} from '../cloud/resolve.mjs';
 import {marketBrief} from '../intelligence/brief.mjs';
 import {executionEstimate} from '../intelligence/math.mjs';
 import {workspaceCatalog,categorySnapshot,inferCategory,inferResearchFamily,WORKSPACE_CATEGORIES} from './catalog.mjs';
+import {discoverMarkets} from './discovery.mjs';
 import {warehouseStatus,marketAttribution,searchPublicMarkets} from './warehouse.mjs';
 import {sportsResearch} from './sports.mjs';
 import {screenAvailabilityForecast} from './nba-availability-feedback.mjs';
@@ -355,7 +356,10 @@ export async function workspaceGET(endpoint,params,dependencies={}) {
     const books=await (deps.batchBooks||batchBooks)(tickers);
     return {books:[...books.values()]};
   }
-  if(endpoint==='workspace/markets')return categorySnapshot(params.get('category')||'sports');
+  if(endpoint==='workspace/markets'){
+    const category=params.get('category')||'sports';
+    return category==='discover'?(deps.discoverMarkets||discoverMarkets)():categorySnapshot(category);
+  }
   if(endpoint==='workspace/context') {
     const ticker=validateTicker(params.get('ticker'));
     const [detail,profile,fees]=await Promise.all([marketDetails(ticker),request('/series/'+ticker.split('-')[0]).catch(()=>null),marketFees(ticker).catch(()=>null)]);

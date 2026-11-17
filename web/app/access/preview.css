@@ -1,0 +1,131 @@
+.preview-entry {
+  min-height: 100dvh;
+  box-sizing: border-box;
+  display: grid;
+  place-items: center;
+  padding: clamp(16px, 5vw, 36px);
+  background: radial-gradient(ellipse at 52% 10%, #202943 0, #0a0e18 56%, #080b12 100%);
+  color: #f2f5fb;
+  color-scheme: dark;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+}
+
+.preview-card {
+  width: min(100%, 27rem);
+  box-sizing: border-box;
+  padding: clamp(22px, 6vw, 34px);
+  border: 1px solid #3a455d;
+  border-radius: 24px;
+  background: linear-gradient(152deg, #1d2638, #131925 62%);
+  box-shadow: 0 28px 80px #0008, inset 0 1px #ffffff0d;
+}
+
+.preview-card h1 {
+  margin: 8px 0 14px;
+  font-size: clamp(2rem, 7vw, 2.6rem);
+  line-height: 1.1;
+  letter-spacing: -.045em;
+}
+
+.preview-eyebrow {
+  margin: 0;
+  color: #bacbef;
+  font-size: .8rem;
+  font-weight: 650;
+}
+
+.preview-description {
+  margin: 0;
+  color: #d0d9eb;
+  line-height: 1.55;
+}
+
+.preview-notice {
+  color: #ffc2ad;
+  line-height: 1.45;
+}
+
+.preview-notice:empty {
+  margin: 0;
+}
+
+.preview-form {
+  display: grid;
+  gap: 14px;
+  margin-block-start: 22px;
+}
+
+.preview-form label {
+  display: grid;
+  gap: 7px;
+  font-size: .875rem;
+}
+
+.preview-input,
+.preview-submit {
+  width: 100%;
+  box-sizing: border-box;
+  min-height: 46px;
+  border-radius: 12px;
+  padding: 10px 12px;
+  font: inherit;
+}
+
+.preview-input {
+  border: 1px solid #555f76;
+  color: #f2f5fb;
+  background: #0c111b;
+  font-size: 16px;
+}
+
+.preview-submit {
+  border: 1px solid #b3ccfa;
+  color: #14233f;
+  background: #b9d2ff;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.preview-submit:disabled {
+  opacity: .68;
+  cursor: default;
+}
+
+.preview-form[aria-busy=true] .preview-submit {
+  cursor: wait;
+}
+
+.preview-card :is(a, button, input):focus-visible {
+  outline: 2px solid #aac9ff;
+  outline-offset: 3px;
+}
+
+.preview-help,
+.preview-privacy {
+  color: #c0cbe1;
+  font-size: .875rem;
+  line-height: 1.5;
+}
+
+.preview-privacy {
+  display: inline-flex;
+  align-items: center;
+  min-height: 40px;
+  margin-block-start: 6px;
+  text-underline-offset: 3px;
+}
+
+.preview-card.privacy-card {
+  width: min(100%, 42rem);
+  line-height: 1.55;
+}
+
+.privacy-card h2 {
+  margin: 22px 0 6px;
+  font-size: 1rem;
+}
+
+.privacy-card p:not(.preview-eyebrow) {
+  margin: 0;
+  color: #d0d9eb;
+}

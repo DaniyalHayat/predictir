@@ -1,9 +1,10 @@
 'use client';
 
 import {useEffect,useRef,useState} from 'react';
-import type {CSSProperties,FormEvent} from 'react';
+import type {FormEvent} from 'react';
 import AccessChallenge from './AccessChallenge';
 import {retryAfterMilliseconds} from '../../lib/transport.mjs';
+import {readPreviewSession} from '../../ui/preview-session.mjs';
 
 type AccessStatus='approved'|'pending'|'missing'|'declined';
 type AccessScreen='checking'|'request'|'pending'|'declined'|'link';
@@ -13,8 +14,6 @@ class AccessStatusThrottled extends Error {
   constructor(readonly retryAfterMs:number){super('Access status throttled');}
 }
 
-const inputStyle:CSSProperties={width:'100%',boxSizing:'border-box',background:'#080808',color:'#f5f5f5',border:'1px solid #505050',borderRadius:8,padding:'12px',font:'inherit',minHeight:44};
-const buttonStyle:CSSProperties={width:'100%',minHeight:44,border:'1px solid #f5f5f5',borderRadius:8,padding:'10px 14px',background:'#f5f5f5',color:'#101010',font:'inherit',fontWeight:600};
 
 function postAccess(path:string,body?:Record<string,string>){
   return fetch(`/api/access/${path}`,{
@@ -51,10 +50,13 @@ async function enterPreview(requestsEnabled:boolean):Promise<EntryResult>{
       notice='This private link could not be opened.';
     }
   }
+  if(await readPreviewSession())return {status:'approved'};
   return {status:requestsEnabled?await readStatus():'missing',notice};
 }
 
-export default function Access({requestsEnabled=false,challengeSiteKey=null}:{requestsEnabled?:boolean;challengeSiteKey?:string|null}){
+export default function Access({requestsEnabled=false,challengeSiteKey=null,googleEnabled=false,signInNotice=''}:{
+  requestsEnabled?:boolean;challengeSiteKey?:string|null;googleEnabled?:boolean;signInNotice?:string;
+}){
   const [screen,setScreen]=useState<AccessScreen>('checking');
   const [notice,setNotice]=useState('');
   const [submitting,setSubmitting]=useState(false);
@@ -69,7 +71,7 @@ export default function Access({requestsEnabled=false,challengeSiteKey=null}:{re
       void result.then(({status,notice})=>{
         if(!active||entry.current!==result)return;
         if(status==='approved'){window.location.replace('/');return;}
-        setNotice(notice??'');
+        setNotice(notice??signInNotice);
         setScreen(status==='missing'?(requestsEnabled?'request':'link'):status);
       }).catch(()=>{
         if(!active||entry.current!==result)return;
@@ -77,18 +79,20 @@ export default function Access({requestsEnabled=false,challengeSiteKey=null}:{re
         setScreen(requestsEnabled?'request':'link');
       });
     }
-    function openNewLink(){
-      if(!window.location.hash)return;
+    function recheck(){
       setScreen('checking');
       setNotice('');
       entry.current=enterPreview(requestsEnabled);
       showResult(entry.current);
     }
+    function openNewLink(){if(window.location.hash)recheck();}
+    function restore(event:PageTransitionEvent){if(event.persisted)recheck();}
     entry.current??=enterPreview(requestsEnabled);
     showResult(entry.current);
     window.addEventListener('hashchange',openNewLink);
-    return ()=>{active=false;window.removeEventListener('hashchange',openNewLink);};
-  },[requestsEnabled]);
+    window.addEventListener('pageshow',restore);
+    return ()=>{active=false;window.removeEventListener('hashchange',openNewLink);window.removeEventListener('pageshow',restore);};
+  },[requestsEnabled,signInNotice]);
 
   useEffect(()=>{
     if(screen!=='pending')return;
@@ -166,31 +170,48 @@ export default function Access({requestsEnabled=false,challengeSiteKey=null}:{re
 
   const messages={
     checking:'Checking preview access…',
-    request:'Enter your name and email to request access from the owner.',
+    request:'Request access to the paper-trading and market research preview.',
     pending:'Request sent. This page will open the preview once the owner approves.',
     declined:'The owner did not approve this request. You can still open a private link if you receive one.',
-    link:'Open the private link you were given.',
+    link:googleEnabled?'Sign in with Google from the United States or open your private link.':'Open the private link you were given.',
   };
 
-  return <main style={{minHeight:'100dvh',boxSizing:'border-box',display:'grid',placeItems:'center',background:'#080808',color:'#f5f5f5',padding:'clamp(16px, 5vw, 32px)',fontFamily:'Arial, sans-serif',colorScheme:'dark'}}>
-    <section aria-labelledby="access-heading" style={{maxWidth:420,width:'100%',boxSizing:'border-box',border:'1px solid #303030',borderRadius:18,padding:'clamp(20px, 6vw, 32px)',background:'#111'}}>
-      <p style={{fontSize:12,color:'#aaa',letterSpacing:2,textTransform:'uppercase',margin:0}}>Private preview</p>
-      <h1 id="access-heading" style={{fontSize:34,letterSpacing:-1,margin:'16px 0'}}>Predictir</h1>
-      <p role="status" style={{fontSize:16,lineHeight:1.6,color:'#d0d0d0',margin:'0 0 12px'}}>{messages[screen]}</p>
-      <p aria-live="polite" style={{color:'#ffc0a6',fontSize:14,lineHeight:1.5,margin:notice?'12px 0':0}}>{notice}</p>
-      {screen==='request'&&<form method="post" action="/api/access/request" onSubmit={submitRequest} aria-busy={submitting} style={{display:'grid',gap:14,marginTop:20}}>
-        <label style={{display:'grid',gap:6,fontSize:14}}>Name
-          <input name="name" autoComplete="name" required maxLength={100} style={inputStyle}/>
+  return <main className="preview-entry">
+    <section className="preview-card" aria-labelledby="access-heading">
+      <p className="preview-eyebrow">Private preview</p>
+      <h1 id="access-heading">Predictir</h1>
+      <p className="preview-description" role="status">{messages[screen]}</p>
+      <p className="preview-notice" aria-live="polite">{notice}</p>
+      {googleEnabled&&screen==='request'&&<GoogleAccessLink/>}
+      {screen==='request'&&<form className="preview-form" method="post" action="/api/access/request" onSubmit={submitRequest} aria-busy={submitting}>
+        <label>Name
+          <input className="preview-input" name="name" autoComplete="name" required maxLength={100}/>
         </label>
-        <label style={{display:'grid',gap:6,fontSize:14}}>Email address
-          <input name="email" type="email" autoComplete="email" required maxLength={254} style={inputStyle}/>
+        <label>Email address
+          <input className="preview-input" name="email" type="email" autoComplete="email" required maxLength={254}/>
         </label>
         {challengeSiteKey&&<AccessChallenge key={challengeAttempt} siteKey={challengeSiteKey} onToken={setChallengeToken}/>}
-        <button type="submit" disabled={submitting||Boolean(challengeSiteKey&&!challengeToken)} style={{...buttonStyle,opacity:submitting||challengeSiteKey&&!challengeToken?0.7:1,cursor:submitting?'wait':'pointer'}}>
+        <button className="preview-submit" type="submit" disabled={submitting||Boolean(challengeSiteKey&&!challengeToken)}>
           {submitting?'Sending request…':'Request access'}
         </button>
       </form>}
-      {screen==='pending'&&<p style={{fontSize:13,lineHeight:1.6,color:'#aaa',margin:'18px 0 0'}}>You can close this page and return here in the same browser.</p>}
+      {googleEnabled&&screen==='link'&&<GoogleAccessLink/>}
+      {screen==='pending'&&<p className="preview-help">You can close this page and return here in the same browser.</p>}
+      {screen!=='checking'&&<a className="preview-privacy" href="/privacy">Privacy</a>}
     </section>
   </main>;
+}
+
+function GoogleAccessLink(){
+  return <a className="google-access-button" href="/api/access/google/start" rel="nofollow" style={{display:'flex',justifyContent:'center',
+    alignItems:'center',gap:12,minHeight:44,border:'1px solid #747775',borderRadius:4,padding:'0 12px',background:'#fff',color:'#1f1f1f',
+    font:"500 14px Roboto, Arial, sans-serif",textDecoration:'none',marginTop:18}}>
+    <svg aria-hidden="true" width="18" height="18" viewBox="0 0 48 48" focusable="false">
+      <path fill="#4285F4" d="M43.61 24.46c0-1.36-.12-2.66-.35-3.92H24v7.42h11a9.41 9.41 0 0 1-4.08 6.17v5.13h6.6c3.85-3.55 6.09-8.79 6.09-14.8Z"/>
+      <path fill="#34A853" d="M24 44c5.51 0 10.13-1.83 13.52-4.97l-6.6-5.12c-1.83 1.23-4.17 1.96-6.92 1.96-5.32 0-9.83-3.59-11.44-8.42H5.74v5.28C9.1 39.42 16.01 44 24 44Z"/>
+      <path fill="#FBBC05" d="M12.56 27.45c-.41-1.23-.64-2.54-.64-3.89s.23-2.66.64-3.89v-5.28H5.74A20.28 20.28 0 0 0 3.6 23.56c0 3.27.78 6.36 2.14 9.17l6.82-5.28Z"/>
+      <path fill="#EA4335" d="M24 11.25c2.99 0 5.67 1.03 7.78 3.05l5.83-5.83C34.1 5.2 29.48 3.2 24 3.2c-7.99 0-14.9 4.58-18.26 11.27l6.82 5.28c1.61-4.83 6.12-8.5 11.44-8.5Z"/>
+    </svg>
+    Sign in with Google
+  </a>;
 }

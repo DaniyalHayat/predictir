@@ -281,6 +281,23 @@ variable "live_access_requests" {
   }
 }
 
+variable "live_google_access" {
+  description = "Optional Google web client for US private preview access. Set the client ID and a versioned Key Vault URI for its secret."
+  type = object({
+    client_id         = string
+    client_secret_uri = string
+  })
+  default = null
+
+  validation {
+    condition = var.live_google_access == null ? true : (
+      can(regex("^[a-zA-Z0-9-]+\\.apps\\.googleusercontent\\.com$", var.live_google_access.client_id)) &&
+      can(regex("^https://[a-z0-9-]+\\.vault\\.azure\\.net/secrets/[a-zA-Z0-9-]+/[a-f0-9]{32}$", var.live_google_access.client_secret_uri))
+    )
+    error_message = "Use a Google web client ID and versioned Key Vault secret URI."
+  }
+}
+
 variable "live_owner" {
   description = "Optional existing single-tenant Entra owner application and the one approved user's object ID. Values are identifiers, not secrets."
   type = object({
