@@ -1,10 +1,11 @@
 import {createCipheriv,createDecipheriv,createHash,randomBytes,randomUUID} from 'node:crypto';
 import {createClient} from '@supabase/supabase-js';
 import {observeProviderAttempt} from '../runtime/telemetry.mjs';
+import {BROWSER_IDLE_SECONDS,BROWSER_MAX_SECONDS,BROWSER_REFRESH_SECONDS} from '../browser-session.mjs';
 import {azureOwnerConfig,azureOwnerLogout,verifyAzureOwner} from './azure-owner.mjs';
 import {azureOrigin} from './azure-mode.mjs';
 import '../../public/dashboard/paper.js';
-const SIX_HOURS=6*3600000,EIGHT_HOURS=8*3600000,SEVEN_DAYS=7*86400000;
+const SIX_HOURS=6*3600000,EIGHT_HOURS=8*3600000;
 const fail=(message,status=400)=>Object.assign(new Error(message),{status});
 const hash=value=>createHash('sha256').update(value).digest('hex');
 const ownerCookie='market_owner',guestCookie='market_guest';
@@ -155,6 +156,8 @@ export function makeAccountHandler({storage,secret=process.env.ACCOUNT_COOKIE_SE
     const verified=await callAuth(()=>auth.auth.getUser(current.access_token)),user=verified?.data?.user;
     if(verified?.error||!user)throw authFailure(verified?.error);
     if(user.id!==current.user_id||String(user.email||'').toLowerCase()!==owner||!user.email_confirmed_at)throw fail('This account is not authorized.',401);
+    const expiry=Math.min(now()+BROWSER_IDLE_SECONDS*1000,retained.expires_epoch*1000);
+    if(expiry-current.expires>=BROWSER_REFRESH_SECONDS*1000)current={...current,expires:expiry};
     return {session:current,user,refreshed:current!==session};
   }
   return async function accountResponse(request,path,{guestOnly=false}={}){
@@ -193,9 +196,14 @@ export function makeAccountHandler({storage,secret=process.env.ACCOUNT_COOKIE_SE
         const auth=authFactory(),signed=await callAuth(()=>auth.auth.signInWithPassword({email,password})),user=signed?.data?.user,s=signed?.data?.session;
         if(signed?.error||!user||!s||!uuid(user.id)||typeof s.access_token!=='string'||!s.access_token||typeof s.refresh_token!=='string'||!s.refresh_token||!Number.isFinite(s.expires_at)||s.expires_at*1000<=now())throw authFailure(signed?.error);
         if(String(user.email||'').toLowerCase()!==owner||!user.email_confirmed_at)throw fail('Email or password was not accepted.',401);
-        const session={id:randomUUID(),user_id:user.id,access_token:s.access_token,refresh_token:s.refresh_token,token_expires:s.expires_at,expires:now()+SEVEN_DAYS};
-        await storage.save({pk:'owner-session#'+hash(session.id),sk:'value',user_id:user.id,revoked:false,expires_epoch:Math.floor(session.expires/1000)});
-        const out=response({kind:'owner',owner:{email:user.email},signup_enabled:false});setCookie(out,ownerCookie,sealSession(session,secret,'owner'),SEVEN_DAYS/1000,secure);return out;
+        const signedAt=now();
+        const session={id:randomUUID(),user_id:user.id,access_token:s.access_token,refresh_token:s.refresh_token,
+          token_expires:s.expires_at,expires:signedAt+BROWSER_IDLE_SECONDS*1000};
+        await storage.save({pk:'owner-session#'+hash(session.id),sk:'value',user_id:user.id,revoked:false,
+          expires_epoch:Math.floor(signedAt/1000)+BROWSER_MAX_SECONDS});
+        const out=response({kind:'owner',owner:{email:user.email},signup_enabled:false});
+        setCookie(out,ownerCookie,sealSession(session,secret,'owner'),BROWSER_IDLE_SECONDS,secure);
+        return out;
       }
       const account=await identity(request),id=account.user.id;
       await quota('account-actions#'+hash(id)+'#'+Math.floor(now()/60000),60,1,120);

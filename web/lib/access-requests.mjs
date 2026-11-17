@@ -1,13 +1,14 @@
 import {createHash,createHmac,randomBytes,timingSafeEqual} from 'node:crypto';
-import {accessOriginAllowed,issueShareCookie,PRIVATE_HEADERS,shareAccessEnabled} from './private-access.mjs';
+import {accessOriginAllowed,issueApprovedShareCookie,PRIVATE_HEADERS,shareAccessEnabled,shareAccessKind} from './private-access.mjs';
+import {browserSessionExpiry,BROWSER_IDLE_SECONDS,BROWSER_MAX_SECONDS,BROWSER_REFRESH_SECONDS,validBrowserSession} from './browser-session.mjs';
 import {readProxyBody} from './workspace/proxy.mjs';
 import {accessIngress} from './workspace/access-ingress.mjs';
 import {accessChallengeConfig,validateAccessChallenge} from './workspace/access-challenge.mjs';
 
 const receiptCookie='__Host-predictir-access-receipt';
 const ownerCookie='__Host-predictir-access-owner';
+const ownerLogoutCookie='__Host-predictir-access-owner-logout';
 const receiptSeconds=7*86400;
-const ownerSeconds=30*86400;
 const tokenPattern=/^[A-Za-z0-9_-]{43}$/;
 const hashPattern=/^[a-f0-9]{64}$/;
 const idPattern=/^[a-z0-9-]{16,128}$/i;
@@ -39,13 +40,36 @@ function readCookie(request,name){
   return matches.length===1?matches[0].slice(name.length+1):'';
 }
 
-function ownerAuthorized(request,env,now){
+function ownerSession(request,env,now){
   const value=readCookie(request,ownerCookie);
-  if(!/^\d{10}\.[A-Za-z0-9_-]{43}$/.test(value))return false;
-  const [expiry,signature]=value.split('.');
-  const current=Math.floor(now/1000);
-  return Number(expiry)>current&&Number(expiry)<=current+ownerSeconds&&
-    equal(signature,sign(env.MARKET_EDGE_SECRET,'predictir.access.owner',expiry+'.'+env.PREDICTIR_ACCESS_OWNER_HASH));
+  const signedOut=readCookie(request,ownerLogoutCookie);
+  if(/^\d{10}\.[A-Za-z0-9_-]{43}$/.test(value)){
+    const [expiry,signature]=value.split('.');
+    const exp=Number(expiry),iat=exp-BROWSER_IDLE_SECONDS,nonce=signature.slice(0,22);
+    if(nonce!==signedOut&&validBrowserSession(iat,exp,now)&&
+      equal(signature,sign(env.MARKET_EDGE_SECRET,'predictir.access.owner',expiry+'.'+env.PREDICTIR_ACCESS_OWNER_HASH)))
+      return {iat,exp,nonce,legacy:true};
+  }
+  if(!/^2\.\d{10}\.\d{10}\.[A-Za-z0-9_-]{22}\.[A-Za-z0-9_-]{43}$/.test(value))return null;
+  const [,issued,expiry,nonce,signature]=value.split('.');
+  const iat=Number(issued),exp=Number(expiry);
+  if(nonce===signedOut||!validBrowserSession(iat,exp,now)||!equal(signature,ownerSessionSignature(env,value.slice(0,-44))))return null;
+  return {iat,exp,nonce};
+}
+
+function ownerSessionSignature(env,value){
+  return sign(env.MARKET_EDGE_SECRET,'predictir.access.owner.v2',value+'.'+env.PREDICTIR_ACCESS_OWNER_HASH);
+}
+
+function ownerSessionCookie(env,now,iat,exp,nonce=randomBytes(16).toString('base64url')){
+  const value=['2',iat,exp,nonce].join('.');
+  return cookie(ownerCookie,value+'.'+ownerSessionSignature(env,value),exp-now);
+}
+
+function renewedOwnerCookies(session,env,now){
+  const expiry=browserSessionExpiry(session.iat,now);
+  if(!session.legacy&&expiry-session.exp<BROWSER_REFRESH_SECONDS)return [];
+  return [ownerSessionCookie(env,now,session.iat,expiry,session.nonce)];
 }
 
 function response(data,status=200,setCookies=[],retryAfter=60){
@@ -96,15 +120,16 @@ export async function handleAccessRequest(request,operation,{env=process.env,now
   if(regional.status!==200)return response({error:'The access check could not be completed.'},regional.status);
 
   try{
+    const nowSeconds=Math.floor(now/1000);
     if(operation==='manage/sign-in'){
       const {code}=await jsonBody(request,160);
       if(typeof code!=='string'||!tokenPattern.test(code)||!equal(digest(code),env.PREDICTIR_ACCESS_OWNER_HASH))
         return response({error:'The owner code is invalid.'},401);
-      const expiry=Math.floor(now/1000)+ownerSeconds;
-      const signature=sign(env.MARKET_EDGE_SECRET,'predictir.access.owner',expiry+'.'+env.PREDICTIR_ACCESS_OWNER_HASH);
-      return response(null,204,[cookie(ownerCookie,expiry+'.'+signature,ownerSeconds)]);
+      return response(null,204,[ownerSessionCookie(env,nowSeconds,nowSeconds,browserSessionExpiry(nowSeconds,nowSeconds))]);
     }
     if(operation==='request'||operation==='request/status'){
+      if(operation==='request/status'&&shareAccessKind(request.headers.get('cookie'),env,now)==='share')
+        return response(null,204);
       const current=readCookie(request,receiptCookie);
       const [candidate,mac,extra]=current.split('.');
       const receiptScope=value=>env.PREDICTIR_SHARE_TOKEN_HASH+'\0'+value;
@@ -119,8 +144,7 @@ export async function handleAccessRequest(request,operation,{env=process.env,now
         const result=await backend(request,env,fetcher,{action:'status',receiptHash},regional);
         if(result.status!==200||!statusPattern.test(result.data?.status||''))return providerFailure(result);
         if(result.data.status==='approved'){
-          const expiry=result.data.sessionExpiresAt;
-          const share=Number.isSafeInteger(expiry)&&issueShareCookie(env,now,'share',expiry);
+          const share=issueApprovedShareCookie(env,now,result.data.sessionExpiresAt,receiptHash);
           if(!share)return providerFailure({status:503});
           return response(null,204,[share,cookie(receiptCookie,'',0)]);
         }
@@ -140,13 +164,18 @@ export async function handleAccessRequest(request,operation,{env=process.env,now
       return response({status:'pending'},202,[cookie(receiptCookie,receipt+'.'+receiptMAC(receipt),receiptSeconds)]);
     }
     if(operation!=='manage')return response({error:'Unknown access action.'},404);
-    if(!ownerAuthorized(request,env,now))return response({error:'Owner sign-in required.'},401);
+    const owner=ownerSession(request,env,nowSeconds);
+    if(!owner)return response({error:'Owner sign-in required.'},401);
     const data=await jsonBody(request,4096);
-    if(data.action==='sign-out')return response(null,204,[cookie(ownerCookie,'',0)]);
+    if(data.action==='sign-out')return response(null,204,[
+      cookie(ownerCookie,'',0),
+      cookie(ownerLogoutCookie,owner.nonce,owner.iat+BROWSER_MAX_SECONDS-nowSeconds)
+    ]);
     if(data.action==='list'){
       const result=await backend(request,env,fetcher,{action:'list'},regional);
       if(result.status!==200||!Array.isArray(result.data?.requests))return providerFailure(result);
-      return response({requests:result.data.requests,vapidPublicKey:env.PREDICTIR_ACCESS_VAPID_PUBLIC_KEY||null});
+      return response({requests:result.data.requests,vapidPublicKey:env.PREDICTIR_ACCESS_VAPID_PUBLIC_KEY||null},
+        200,renewedOwnerCookies(owner,env,nowSeconds));
     }
     if(data.action==='decide'&&typeof data.id==='string'&&idPattern.test(data.id)&&['approved','declined'].includes(data.decision)||
       data.action==='subscribe'&&data.subscription&&typeof data.subscription==='object'||

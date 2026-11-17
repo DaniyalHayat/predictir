@@ -5,6 +5,8 @@ import type {FormEvent} from 'react';
 import styles from './owner.module.css';
 
 type AccessRequest={id:string;name:string;email:string;createdAt:string};
+const requestIdPattern=/^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/;
+const requestTime=new Intl.DateTimeFormat(undefined,{month:'short',day:'numeric',hour:'numeric',minute:'2-digit'});
 
 function post(path:string,body:unknown){
   return fetch('/api/access/manage'+path,{method:'POST',credentials:'same-origin',cache:'no-store',
@@ -23,20 +25,27 @@ export default function OwnerAccess(){
   const [message,setMessage]=useState('');
   const [busy,setBusy]=useState(false);
   const [deciding,setDeciding]=useState('');
+  const [selectedRequest,setSelectedRequest]=useState('');
+  const selectedCard=useRef<HTMLElement|null>(null);
   const submission=useRef(false);
+  const refreshVersion=useRef(0);
   const registration=useRef<ServiceWorkerRegistration|null>(null);
   const currentSubscription=useRef<PushSubscription|null>(null);
 
   async function refresh(){
+    const version=++refreshVersion.current;
     try{
       const result=await post('',{action:'list'});
+      if(version!==refreshVersion.current)return;
       if(result.status===401){setRequests([]);setState('locked');return;}
       if(!result.ok)throw new Error();
       const data=await result.json();
+      if(version!==refreshVersion.current)return;
       setRequests(data.requests);
       setPublicKey(data.vapidPublicKey||'');
       setState('ready');
     }catch{
+      if(version!==refreshVersion.current)return;
       setState(previous=>previous==='ready'?'ready':'unavailable');
       setMessage('The request queue is unavailable. Try again.');
     }
@@ -44,15 +53,31 @@ export default function OwnerAccess(){
 
   useEffect(()=>{
     const reopen=()=>{if(document.visibilityState==='visible')void refresh();};
-    const notification=(event:MessageEvent)=>{if(event.data==='predictir-access-request')void refresh();};
+    const notification=(event:MessageEvent)=>{
+      if(event.data==='predictir-access-request'){void refresh();return;}
+      if(event.data?.type!=='predictir-access-request')return;
+      const id=event.data.requestId;
+      if(typeof id==='string'&&requestIdPattern.test(id))setSelectedRequest(id);
+      void refresh();
+    };
+    const ids=new URLSearchParams(window.location.search).getAll('request');
+    if(ids.length===1&&requestIdPattern.test(ids[0]))setSelectedRequest(ids[0]);
     void refresh();
     document.addEventListener('visibilitychange',reopen);
     navigator.serviceWorker?.addEventListener('message',notification);
     return ()=>{
+      refreshVersion.current++;
       document.removeEventListener('visibilitychange',reopen);
       navigator.serviceWorker?.removeEventListener('message',notification);
     };
   },[]);
+  const selectedPending=state==='ready'&&requests.some(item=>item.id===selectedRequest);
+  useEffect(()=>{
+    if(!selectedPending)return;
+    selectedCard.current?.scrollIntoView({block:'center'});
+    selectedCard.current?.focus({preventScroll:true});
+  },[selectedPending,selectedRequest]);
+
   useEffect(()=>{
     if(state!=='ready'||!publicKey||!pushSupported())return;
     let active=true;
@@ -94,7 +119,9 @@ export default function OwnerAccess(){
       if(result.status===401||result.status===409||result.status===404){await refresh();return;}
       if(!result.ok)throw new Error();
       const {status}=await result.json();
+      refreshVersion.current++;
       setRequests(items=>items.filter(item=>item.id!==id));
+      setSelectedRequest(previous=>previous===id?'':previous);
       setMessage(status==='approved'?'Approved. The visitor can now open Predictir.':
         status==='declined'?'Request declined.':'This request has expired.');
     }catch{setMessage('The decision could not be saved. Refresh the queue and try again.');}
@@ -136,9 +163,17 @@ export default function OwnerAccess(){
     try{
       const result=await post('',{action:'sign-out'});
       if(!result.ok&&result.status!==401)throw new Error();
+      refreshVersion.current++;
       setRequests([]);
       setState('locked');
     }catch{setMessage('Could not sign out. Try again.');}
+  }
+
+  async function copyEmail(email:string){
+    try{
+      await navigator.clipboard.writeText(email);
+      setMessage('Email copied.');
+    }catch{setMessage('Could not copy. Select the email and copy it manually.');}
   }
 
   return <main className={styles.shell}>
@@ -162,14 +197,35 @@ export default function OwnerAccess(){
         </div>
         {publicKey&&pushState==='unavailable'&&<p>On iPhone or iPad, open this page in Safari, choose Share → Add to Home Screen, then open the Predictir icon to enable alerts.</p>}
         {!publicKey&&<p>Push alerts are currently unavailable. Use this page to review requests.</p>}
+        {selectedRequest&&!selectedPending&&<p role="status">That request is no longer pending.</p>}
         {requests.length===0?<p>No pending requests.</p>:<ul className={styles.list}>
-          {requests.map(item=><li key={item.id}>
-            <strong>{item.name}</strong><span>{item.email}</span>
-            <div className={styles.tools}>
-              <button className={styles.approve} disabled={Boolean(deciding)} onClick={()=>void decide(item.id,'approved')}>Approve</button>
-              <button disabled={Boolean(deciding)} onClick={()=>void decide(item.id,'declined')}>Decline</button>
-            </div>
-          </li>)}
+          {requests.map(item=>{
+            const selected=item.id===selectedRequest;
+            const date=new Date(item.createdAt);
+            return <li key={item.id}>
+              <article className={styles.request} data-selected={selected||undefined} aria-labelledby={'request-'+item.id}
+                ref={selected?selectedCard:undefined} tabIndex={selected?-1:undefined} aria-busy={deciding===item.id}>
+                <header className={styles.requestHeader}>
+                  {selected&&<span className={styles.selectedLabel}>Selected request</span>}
+                  <h2 className={styles.name} id={'request-'+item.id}>{item.name}</h2>
+                  {Number.isFinite(+date)&&<time dateTime={item.createdAt}>{requestTime.format(date)}</time>}
+                </header>
+                <div className={styles.contact}>
+                  <span className={styles.email} onClick={event=>{
+                    if(event.target instanceof Element&&event.target.closest('a'))event.preventDefault();
+                  }}>{item.email}</span>
+                  <button type="button" className={styles.copy} aria-label={'Copy email for '+item.name}
+                    onClick={()=>void copyEmail(item.email)}>Copy email</button>
+                </div>
+                <footer className={styles.decisions}>
+                  <button type="button" className={styles.approve} disabled={Boolean(deciding)}
+                    aria-label={'Approve '+item.name} onClick={()=>void decide(item.id,'approved')}>Approve</button>
+                  <button type="button" className={styles.decline} disabled={Boolean(deciding)}
+                    aria-label={'Decline '+item.name} onClick={()=>void decide(item.id,'declined')}>Decline</button>
+                </footer>
+              </article>
+            </li>;
+          })}
         </ul>}
       </>}
       <p role="status" aria-live="polite">{message}</p>

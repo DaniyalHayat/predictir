@@ -1,8 +1,10 @@
 import {createHash,createHmac,timingSafeEqual} from 'node:crypto';
 import {accessIngress} from './workspace/access-ingress.mjs';
 import {createAdmission} from './runtime/admission.mjs';
+import {browserSessionExpiry,BROWSER_IDLE_SECONDS,BROWSER_MAX_SECONDS,BROWSER_REFRESH_SECONDS,validBrowserSession} from './browser-session.mjs';
 
 export const SHARE_COOKIE='__Host-predictir-share';
+const APPROVED_LOGOUT_COOKIE='__Host-predictir-share-logout';
 export const SHARE_COOKIE_SECONDS=86400;
 export const CANARY_COOKIE='__Host-predictir-canary';
 export const CANARY_COOKIE_SECONDS=900;
@@ -24,26 +26,32 @@ export function shareCookieValue(header,cookie=SHARE_COOKIE){
   const values=header.split(';').map(part=>part.trim()).filter(part=>part.startsWith(cookie+'='));
   return values.length===1?values[0].slice(cookie.length+1):null;
 }
-function validCookie(header,env,now,kind){
+function verifiedCookie(header,env,now,kind){
   const config=settings(env,kind);
-  if(!config)return false;
+  if(!config)return null;
   const value=shareCookieValue(header,config.cookie);
-  if(!value||value.length>400||!/^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]{43}$/.test(value))return false;
+  if(!value||value.length>400||!/^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]{43}$/.test(value))return null;
   const [encoded,mac]=value.split('.');
-  if(!sameBytes(Buffer.from(mac),Buffer.from(signature(encoded,config.key,kind))))return false;
+  if(!sameBytes(Buffer.from(mac),Buffer.from(signature(encoded,config.key,kind))))return null;
   try{
     const payload=JSON.parse(Buffer.from(encoded,'base64url').toString('utf8'));
-    return Object.keys(payload).length===3&&payload.v===1&&typeof payload.h==='string'&&
-      sameBytes(Buffer.from(payload.h),Buffer.from(config.hash))&&Number.isSafeInteger(payload.exp)&&payload.exp>Math.floor(now/1000)&&payload.exp<=Math.floor(now/1000)+config.seconds+60;
-  }catch{return false;}
+    if(typeof payload.h!=='string'||!sameBytes(Buffer.from(payload.h),Buffer.from(config.hash)))return null;
+    const current=Math.floor(now/1000);
+    if(payload.v===1&&Object.keys(payload).length===3&&Number.isSafeInteger(payload.exp)&&
+      payload.exp>current&&payload.exp<=current+config.seconds+60)return payload;
+    if(kind==='share'&&payload.v===2&&Object.keys(payload).length===5&&typeof payload.id==='string'&&
+      /^[A-Za-z0-9_-]{22}$/.test(payload.id)&&payload.id!==shareCookieValue(header,APPROVED_LOGOUT_COOKIE)&&
+      validBrowserSession(payload.iat,payload.exp,current))return payload;
+  }catch{return null;}
+  return null;
 }
 export function shareCookieAuthorized(header,env=process.env,now=Date.now()){
-  return !shareAccessEnabled(env)||validCookie(header,env,now,'share');
+  return !shareAccessEnabled(env)||Boolean(verifiedCookie(header,env,now,'share'));
 }
 export function shareAccessKind(header,env=process.env,now=Date.now()){
   if(!shareAccessEnabled(env))return 'open';
-  if(validCookie(header,env,now,'share'))return 'share';
-  return validCookie(header,env,now,'canary')?'canary':null;
+  if(verifiedCookie(header,env,now,'share'))return 'share';
+  return verifiedCookie(header,env,now,'canary')?'canary':null;
 }
 const canaryReadPaths=new Set(['/api/health','/api/session','/api/book','/api/stream','/api/workspace/catalog',
   '/api/workspace/markets','/api/workspace/context','/api/workspace/history','/api/workspace/research','/api/workspace/opinions']);
@@ -93,8 +101,40 @@ export function issueShareCookie(env=process.env,now=Date.now(),kind='share',exp
   if(!shareAccessEnabled(env)||!config)return null;
   const current=Math.floor(now/1000),exp=expiresAt??current+config.seconds;
   if(!Number.isSafeInteger(exp)||exp<=current||exp>current+config.seconds+60)return null;
-  const encoded=Buffer.from(JSON.stringify({v:1,h:config.hash,exp})).toString('base64url');
-  return config.cookie+'='+encoded+'.'+signature(encoded,config.key,kind)+'; Path=/; Secure; HttpOnly; SameSite=Lax; Max-Age='+Math.min(config.seconds,exp-current);
+  return signedCookie(config,kind,{v:1,h:config.hash,exp},Math.min(config.seconds,exp-current));
+}
+function signedCookie(config,kind,payload,maxAge){
+  const encoded=Buffer.from(JSON.stringify(payload)).toString('base64url');
+  return browserCookie(config.cookie,encoded+'.'+signature(encoded,config.key,kind),maxAge);
+}
+function browserCookie(name,value,maxAge){
+  return name+'='+value+'; Path=/; Secure; HttpOnly; SameSite=Lax; Max-Age='+maxAge;
+}
+export function issueApprovedShareCookie(env,now,redemptionExpiresAt,receiptHash){
+  const config=settings(env);
+  if(!shareAccessEnabled(env)||!config||typeof receiptHash!=='string'||!/^[a-f0-9]{64}$/.test(receiptHash))return null;
+  const current=Math.floor(now/1000);
+  if(!Number.isSafeInteger(redemptionExpiresAt)||redemptionExpiresAt<=current||redemptionExpiresAt>current+config.seconds+60)return null;
+  const iat=redemptionExpiresAt-config.seconds;
+  const exp=browserSessionExpiry(iat,iat);
+  const id=signature(receiptHash,config.key,'approval-id').slice(0,22);
+  return signedCookie(config,'share',{v:2,h:config.hash,exp,iat,id},Math.min(BROWSER_IDLE_SECONDS,exp-current));
+}
+export function renewApprovedShareCookie(header,env=process.env,now=Date.now()){
+  if(!shareAccessEnabled(env))return null;
+  const session=verifiedCookie(header,env,now,'share');
+  if(session?.v!==2)return null;
+  const current=Math.floor(now/1000),exp=browserSessionExpiry(session.iat,current);
+  if(exp-session.exp<BROWSER_REFRESH_SECONDS)return null;
+  return signedCookie(settings(env),'share',{...session,exp},exp-current);
+}
+export function shareHeaderForBackend(header,env=process.env,now=Date.now()){
+  if(!shareAccessEnabled(env))return header;
+  const session=verifiedCookie(header,env,now,'share');
+  if(session?.v!==2)return header;
+  const expiry=Math.min(session.exp,Math.floor(now/1000)+SHARE_COOKIE_SECONDS);
+  const replacement=issueShareCookie(env,now,'share',expiry).split(';',1)[0];
+  return header.split(';').map(part=>part.trim().startsWith(SHARE_COOKIE+'=')?replacement:part.trim()).join('; ');
 }
 function rejectRedemption(ip,key,now){
   const fingerprint=createHmac('sha256',key).update('share-limit\0'+ip).digest('hex');
@@ -126,14 +166,19 @@ export async function redeemShareAccess(request,{env=process.env,now=Date.now(),
       return config&&sameBytes(Buffer.from(hash),Buffer.from(config.hash));
     });
     if(!kind)return rejectRedemption(ip,share.key,now);
+    if(kind==='share'&&verifiedCookie(request.headers.get('cookie'),env,now,'share')?.v===2)
+      return new Response(null,{status:204,headers:PRIVATE_HEADERS});
     return new Response(null,{status:204,headers:{...PRIVATE_HEADERS,'Set-Cookie':issueShareCookie(env,now,kind)}});
   }catch(error){return Response.json({error:'The private link could not be opened.'},{status:[413,415].includes(error.status)?error.status:400,headers:PRIVATE_HEADERS});}
 }
-export async function logoutShareAccess(request,{env=process.env}={}){
+export async function logoutShareAccess(request,{env=process.env,now=Date.now()}={}){
   if(request.method!=='POST')return Response.json({error:'Use POST.'},{status:405,headers:PRIVATE_HEADERS});
   if(!accessOriginAllowed(request,env))return Response.json({error:'Open this action from Predictir.'},{status:403,headers:PRIVATE_HEADERS});
   const headers=new Headers(PRIVATE_HEADERS);
-  headers.append('Set-Cookie',SHARE_COOKIE+'=; Path=/; Secure; HttpOnly; SameSite=Lax; Max-Age=0');
-  if(shareCookieValue(request.headers.get('cookie'),CANARY_COOKIE))headers.append('Set-Cookie',CANARY_COOKIE+'=; Path=/; Secure; HttpOnly; SameSite=Lax; Max-Age=0');
+  const cookieHeader=request.headers.get('cookie');
+  const session=verifiedCookie(cookieHeader,env,now,'share');
+  headers.append('Set-Cookie',browserCookie(SHARE_COOKIE,'',0));
+  if(session?.v===2)headers.append('Set-Cookie',browserCookie(APPROVED_LOGOUT_COOKIE,session.id,session.iat+BROWSER_MAX_SECONDS-Math.floor(now/1000)));
+  if(shareCookieValue(cookieHeader,CANARY_COOKIE))headers.append('Set-Cookie',browserCookie(CANARY_COOKIE,'',0));
   return new Response(null,{status:204,headers});
 }

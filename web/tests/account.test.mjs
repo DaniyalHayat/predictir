@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {randomUUID} from 'node:crypto';
 import {readFile} from 'node:fs/promises';
 import {makeAccountHandler,sealSession,openSession,guestSession,validatePortfolio} from '../lib/workspace/account.mjs';
+import {BROWSER_MAX_SECONDS} from '../lib/browser-session.mjs';
 import {makePostgresStore} from '../lib/postgres-store.mjs';
 import {applyTestSchema} from './database-fixture.mjs';
 import {setupOwner} from '../tools/setup_owner.mjs';
@@ -32,9 +33,29 @@ test('guest response and owner login keep tokens private and use host-only HttpO
   const f=fixture(),guest=await f.request('session'),guestData=await guest.json();assert.equal(guestData.signup_enabled,false);assert.equal(guestData.kind,'guest');
   assert.match(guest.headers.getSetCookie()[0],/^__Host-market_guest=.*; Path=\/; HttpOnly; SameSite=Strict; Max-Age=21600; Secure$/);
   const signed=await f.login();assert.equal(signed.status,200);assert.match(cookie(signed),/^__Host-market_owner=/);
-  assert.match(signed.headers.getSetCookie()[0],/HttpOnly; SameSite=Strict; Max-Age=604800; Secure/);assert.equal(signed.headers.get('cache-control'),'no-store');
+  assert.match(signed.headers.getSetCookie()[0],/HttpOnly; SameSite=Strict; Max-Age=2592000; Secure/);assert.equal(signed.headers.get('cache-control'),'no-store');
   assert.ok(!JSON.stringify(await signed.json()).includes('private'));assert.equal(f.records.size,1);
   assert.ok(!JSON.stringify([...f.records.values()]).includes('fixture-access'));
+});
+
+test('new saved portfolios renew in the same browser and retain a server-side deadline',async()=>{
+  const f=fixture(),day=86400000;
+  let active=cookie(await f.login());
+  assert.equal((await (await f.request('session')).json()).kind,'guest');
+  assert.equal((await (await f.request('session',{cookie:active})).json()).kind,'owner');
+  const [record]=f.records.values();
+  assert.equal(record.expires_epoch,start/1000+BROWSER_MAX_SECONDS);
+  for(const days of [20,40,60,80,100,120,140,160]){
+    f.setTime(start+days*day);
+    const next=await f.request('session',{cookie:active});
+    assert.equal((await next.json()).kind,'owner');
+    active=cookie(next);
+  }
+  assert.deepEqual([...f.records.values()],[record]);
+  f.setTime(start+BROWSER_MAX_SECONDS*1000-1000);
+  assert.equal((await (await f.request('session',{cookie:active})).json()).kind,'owner');
+  f.setTime(start+BROWSER_MAX_SECONDS*1000);
+  assert.equal((await (await f.request('session',{cookie:active})).json()).kind,'guest');
 });
 
 test('guest cookies stay stable when Supabase is configured but the owner account is not activated',async()=>{

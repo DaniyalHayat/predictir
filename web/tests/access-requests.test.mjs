@@ -1,8 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {createHash,randomBytes} from 'node:crypto';
+import {createHash,createHmac,randomBytes} from 'node:crypto';
 import {handleAccessRequest} from '../lib/access-requests.mjs';
 import {publicAccessPath,SHARE_COOKIE,SHARE_COOKIE_SECONDS,shareCookieAuthorized} from '../lib/private-access.mjs';
+import {BROWSER_IDLE_SECONDS,BROWSER_MAX_SECONDS} from '../lib/browser-session.mjs';
 
 const hash=value=>createHash('sha256').update(value).digest('hex');
 const ownerCode=randomBytes(32).toString('base64url');
@@ -89,8 +90,11 @@ test('only the originating browser can enter after an authenticated owner approv
   const retry=await call('request/status',undefined,{cookie:receipt,options:{...options,now:now+60_000}});
   assert.equal(retry.status,204);
   assert.equal(cookiePair(retry.headers,SHARE_COOKIE),share);
-  assert.match(retry.headers.getSetCookie()[0],/Max-Age=86340$/);
-  assert.equal(shareCookieAuthorized(share,env,sessionExpiresAt*1000),false);
+  assert.ok(retry.headers.getSetCookie()[0].endsWith('Max-Age='+(BROWSER_IDLE_SECONDS-60)));
+  assert.equal(shareCookieAuthorized(share,env,sessionExpiresAt*1000),true);
+  const returning=await call('request/status',undefined,{cookie:share,options:{...options,now:sessionExpiresAt*1000}});
+  assert.equal(returning.status,204);
+  assert.deepEqual(returning.headers.getSetCookie(),[]);
   const expired=await call('request/status',undefined,{cookie:receipt,options:{...options,now:sessionExpiresAt*1000}});
   assert.equal(expired.status,503);
   assert.equal(cookiePair(expired.headers,SHARE_COOKIE),undefined);
@@ -98,6 +102,57 @@ test('only the originating browser can enter after an authenticated owner approv
   assert.equal(missingExpiry.status,503);
   assert.equal(cookiePair(missingExpiry.headers,SHARE_COOKIE),undefined);
   assert.equal(forwarded,7);
+});
+
+test('owner activity renews the same browser within a fixed ceiling and code changes reject it',async()=>{
+  const name='__Host-predictir-access-owner',day=86400*1000;
+  const start=Date.parse('2026-11-11T12:00:00Z'),fetcher=async()=>Response.json({requests:[]});
+  const list=(cookie,now,config=env)=>call('manage',{action:'list'},{cookie,options:{now,fetcher,env:config}});
+  const signed=await call('manage/sign-in',{code:ownerCode},{options:{now:start,fetcher}});
+  let owner=cookiePair(signed.headers,name);
+  assert.match(signed.headers.getSetCookie()[0],/HttpOnly; SameSite=Strict; Max-Age=2592000$/);
+  assert.equal((await list('',start)).status,401);
+  assert.equal((await list(owner+'x',start)).status,401);
+  assert.deepEqual((await list(owner,start+1000)).headers.getSetCookie(),[]);
+  assert.equal((await list(owner,start+BROWSER_IDLE_SECONDS*1000)).status,401);
+  for(const days of [20,40,60,80,100,120,140,160,179]){
+    const next=await list(owner,start+days*day);
+    assert.equal(next.status,200);
+    owner=cookiePair(next.headers,name)||owner;
+  }
+  assert.equal((await list(owner,start+BROWSER_MAX_SECONDS*1000-1000)).status,200);
+  assert.equal((await list(owner,start+BROWSER_MAX_SECONDS*1000)).status,401);
+  assert.equal((await list(owner,start+179*day,{...env,PREDICTIR_ACCESS_OWNER_HASH:hash('replacement')})).status,401);
+  assert.equal((await list(owner,start+179*day,{...env,MARKET_EDGE_SECRET:'replacement-signing-key-for-fixture-only'})).status,401);
+});
+
+test('a valid earlier owner session migrates without asking for the owner code again',async()=>{
+  const name='__Host-predictir-access-owner',now=Date.parse('2026-11-11T12:00:00Z');
+  const expiry=String(now/1000+14*86400);
+  const mac=createHmac('sha256',env.MARKET_EDGE_SECRET)
+    .update('predictir.access.owner\0'+expiry+'.'+env.PREDICTIR_ACCESS_OWNER_HASH).digest('base64url');
+  const list=await call('manage',{action:'list'},{cookie:name+'='+expiry+'.'+mac,options:{now,
+    fetcher:async()=>Response.json({requests:[]})}});
+  assert.equal(list.status,200);
+  const renewed=cookiePair(list.headers,name);
+  assert.match(renewed,/=2\./);
+  const signedOut=await call('manage',{action:'sign-out'},{cookie:renewed,options:{now}});
+  assert.equal(signedOut.status,204);
+  assert.match(signedOut.headers.getSetCookie()[0],/Max-Age=0$/);
+});
+
+test('a late renewal cannot restore a signed-out owner session in another tab',async()=>{
+  const name='__Host-predictir-access-owner',now=Date.parse('2026-11-11T12:00:00Z');
+  const options={now,fetcher:async()=>Response.json({requests:[]})};
+  const signedIn=await call('manage/sign-in',{code:ownerCode},{options});
+  const original=cookiePair(signedIn.headers,name),later={...options,now:now+2*86400000};
+  const refreshed=await call('manage',{action:'list'},{cookie:original,options:later});
+  const signedOut=await call('manage',{action:'sign-out'},{cookie:original,options:later});
+  const marker=cookiePair(signedOut.headers,name+'-logout');
+  assert.equal(signedOut.status,204);
+  assert.equal((await call('manage',{action:'list'},{cookie:cookiePair(refreshed.headers,name)+'; '+marker,options:later})).status,401);
+  const again=await call('manage/sign-in',{code:ownerCode},{cookie:marker,options:later});
+  assert.equal((await call('manage',{action:'list'},{cookie:cookiePair(again.headers,name)+'; '+marker,options:later})).status,200);
 });
 
 test('a change to the share verifier invalidates the old receipt before any storage access',async()=>{
