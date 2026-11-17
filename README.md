@@ -10,7 +10,7 @@ Request access to the main preview or open a private invitation link you already
 
 ## What you can do
 
-- Explore eight market categories with live quotes, order-book depth and source timestamps.
+- Discover up to 20 active Kalshi contracts sampled by traded volume, two-sided order-book size and spread. Browse nine market categories or open an exact Kalshi ticker or link.
 - Compare YES and NO costs, model estimates, uncertainty and simulated outcomes.
 - Buy and close paper positions against observed depth, then track cash, fees and P/L.
 - Review supported HOLD/SELL decisions and compare alternative trades.

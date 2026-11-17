@@ -54,3 +54,146 @@ button,input,textarea,select{font:inherit}button,a,input,textarea{outline-offset
 .quote-comparison{align-items:start}.quote-comparison>.probability-card{gap:8px}.probability-heading{font-weight:500}.probability-pair{display:grid;grid-template-columns:1fr 1fr;gap:12px}.probability-outcome{min-width:0}.quote-comparison .probability-outcome>span{font-size:10px;letter-spacing:.04em}.quote-comparison .probability-outcome>strong{display:block;font-size:24px;line-height:1.25;margin:3px 0 9px}.probability-high{color:var(--positive)}.probability-low{color:var(--red)}.probability-balanced{color:#b6c5e0}.probability-track{height:3px;border-radius:3px;background:var(--line);overflow:hidden}.probability-track>span{display:block;height:100%;width:var(--chance);background:currentColor;color:inherit}.quote-comparison .probability-caption{grid-column:1/-1;margin:0;font-size:11px;line-height:1.65;color:var(--muted)}.probability-gap{font-weight:500}.gap-positive{color:var(--positive)}.gap-negative{color:var(--red)}.probability-unavailable{font-size:13px;margin:4px 0;line-height:1.6}:root[data-theme=light] .probability-balanced{color:#3f587e}@media(prefers-reduced-motion:no-preference){.probability-track>span{transition:width .2s ease}}@media(max-width:760px){.probability-pair{gap:9px}.quote-comparison .probability-outcome>strong{font-size:21px}}
 .probability-pair.probability-three{grid-template-columns:repeat(3,minmax(0,1fr))}
 @media(max-width:560px){.quote-comparison{grid-template-columns:minmax(0,1fr)}.contract-tabs>.ask-button{min-width:44px;min-height:44px;justify-content:center}}
+
+:root {
+  --surface-raised: var(--soft);
+  --interactive-radius: 11px;
+  --panel-radius: 16px;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+}
+
+:root:not([data-theme=light]) {
+  --page: #090c12;
+  --panel: #11151e;
+  --ink: #f2f5fb;
+  --muted: #aeb8ca;
+  --line: #2c3445;
+  --soft: #1a2230;
+  --accent: #b9d2ff;
+  --accent-soft: #202e46;
+  --rail: #0d111a;
+  --rail-muted: #a4afc1;
+  --rail-ink: #dae3f2;
+  --on-accent: #12223b;
+  --positive: #8ad7ae;
+  --red: #ffabb7;
+  --surface-raised: #161d2a;
+}
+
+:root[data-theme=midnight] {
+  --page: #080b12;
+  --panel: #101523;
+  --rail: #0b101b;
+  --surface-raised: #182138;
+}
+
+.workspace-header {
+  background: linear-gradient(110deg, var(--surface-raised), var(--panel) 74%);
+}
+
+.workspace .sidebar {
+  border-inline-end: 1px solid var(--line);
+}
+
+.workspace .brand,
+.market-list-heading h1,
+.contract-heading h2 {
+  font-weight: 650;
+}
+
+.workspace .sidebar nav button,
+.market-search,
+.workspace .icon-button,
+.workspace .secondary,
+.workspace .ask-button {
+  border-radius: var(--interactive-radius);
+}
+
+.workspace .sidebar nav button.active {
+  background: var(--accent-soft);
+  color: var(--accent);
+  box-shadow: inset 0 0 0 1px var(--line);
+}
+
+.workspace .market-search {
+  background: var(--surface-raised);
+  min-block-size: 42px;
+}
+
+.workspace .market-search:focus-within {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent-soft);
+}
+
+.workspace .market-row.selected {
+  border-inline-start-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.workspace .market-select:hover,
+.workspace .market-select:focus-visible {
+  background: var(--soft);
+}
+
+.workspace .row-prices,
+.workspace .quote-strip,
+.workspace .probability-outcome {
+  font-variant-numeric: tabular-nums;
+}
+
+.workspace .quote-strip {
+  background: var(--surface-raised);
+}
+
+.workspace .probability-card,
+.workspace .opinion-card,
+.workspace .paper-account,
+.workspace .account-dialog,
+.workspace .execution-result,
+.workspace .evidence-invitation {
+  border-radius: var(--panel-radius);
+}
+
+.workspace .quote-comparison > .probability-card {
+  padding: 12px;
+  border: 1px solid var(--line);
+  background: var(--surface-raised);
+}
+
+.workspace :is(.market-rows, .contract-scroll, .contract-tab-list) {
+  scrollbar-color: var(--line) transparent;
+}
+
+@media (max-width: 760px) {
+  .workspace .sidebar {
+    border-inline-end: 0;
+  }
+
+  .workspace .sidebar nav {
+    scroll-padding-inline: 12px;
+  }
+
+  .workspace .sidebar nav button,
+  .workspace .market-search,
+  .workspace .contract-links a,
+  .workspace .contract-links button,
+  .workspace .header-actions > button {
+    min-block-size: 44px;
+  }
+
+  .workspace .workspace-header > div:first-child {
+    min-inline-size: 0;
+  }
+
+  .workspace .workspace-header strong {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .workspace :is(.market-select, .ask-button, .sidebar nav button, .secondary) {
+    transition: background-color 160ms ease, color 160ms ease, border-color 160ms ease;
+  }
+}

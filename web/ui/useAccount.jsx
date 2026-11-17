@@ -17,6 +17,16 @@ const ownerCacheId=session=>session?.owner?.key||session?.owner?.email?.toLowerC
 const ownerMetaKey=id=>accountCacheKey('owner-meta:'+id);
 const accountAPI=(path,options={})=>fetchJSON(path,{cache:'no-store',source:'Account',credentials:'same-origin',...options});
 function ownerMeta(){return parse(localStorage.getItem(ownerMetaKey(ownerCacheId(state.session))));}
+
+function restoredWatchlist(saved,meta){
+  const remote=saved.watchlist||[];
+  if(!Array.isArray(meta?.watchlist))return remote;
+  if(!Array.isArray(meta.syncedWatchlist))return meta.revision===saved.revision?meta.watchlist.slice(0,200):remote;
+  const removed=new Set(meta.syncedWatchlist.filter(ticker=>!meta.watchlist.includes(ticker)));
+  const added=meta.watchlist.filter(ticker=>!meta.syncedWatchlist.includes(ticker));
+  return [...new Set([...remote.filter(ticker=>!removed.has(ticker)),...added])].slice(0,200);
+}
+
 export async function loadAccountSession(force=false){
   if(loading&&!force)return loading;
   const intent=++loadIntent;
@@ -37,13 +47,14 @@ export async function loadAccountSession(force=false){
         if(localChanged&&remoteChanged&&saved.ledger&&JSON.stringify(local)!==JSON.stringify(saved.ledger))publish({conflict:{local,remote:saved,revision}});
         else if(saved.ledger&&!localChanged){localStorage.setItem(PAPER_STORAGE,JSON.stringify(saved.ledger));synced=JSON.stringify(saved.ledger);}
         else if(localChanged&&JSON.stringify(local)===JSON.stringify(saved.ledger))synced=JSON.stringify(local);
-        const watchlist=[...new Set([...(saved.watchlist||[]),...(meta?.watchlist||[])])].slice(0,200);
-        localStorage.setItem(ownerMetaKey(id),JSON.stringify({revision,synced,watchlist}));
+        const watchlist=restoredWatchlist(saved,meta);
+        localStorage.setItem(ownerMetaKey(id),JSON.stringify({revision,synced,watchlist,syncedWatchlist:saved.watchlist||[]}));
         publish({session,status:'ready',watchlist,sync:state.conflict?'Review saved versions':localChanged&&synced!==JSON.stringify(local)?'Changes saved on this browser':'Saved to your account'});
         notifyPaper();
         if(!state.conflict&&(localChanged&&synced!==JSON.stringify(local)||JSON.stringify(watchlist)!==JSON.stringify(saved.watchlist||[])))queueOwnerSave(local||saved.ledger||initializePaperAccount({version:1,positions:[],trades:[]}));
       }else{
-        switchPaperAccount(localStorage,'guest:'+session.guest?.id,{guest:session.guest});revision=0;synced=null;pendingSave=null;clearTimeout(saveTimer);
+        if(session.kind!=='guest'||typeof session.guest?.id!=='string'||!session.guest.id)throw new Error('Your paper session could not be verified. Refresh to try again.');
+        switchPaperAccount(localStorage,'guest:'+session.guest.id,{guest:session.guest});revision=0;synced=null;pendingSave=null;clearTimeout(saveTimer);
         const watchlist=parse(localStorage.getItem(accountCacheKey('watchlist:guest:'+session.guest.id)))||[];
         publish({session,status:'ready',watchlist,sync:'',conflict:null});notifyPaper();
       }
@@ -74,12 +85,13 @@ async function flushOwnerSave(){
   saving=true;const ledger=pendingSave;pendingSave=null;
   const currentOwner=()=>state.status==='ready'&&state.session?.kind==='owner'&&ownerCacheId(state.session)===id&&localStorage.getItem(ACTIVE_ACCOUNT)==='owner:'+id;
   try{
-    const response=await fetch('/api/account/portfolio',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({ledger,watchlist:ownerMeta()?.watchlist||[],revision}),cache:'no-store',credentials:'same-origin',signal:AbortSignal.timeout(15000)});
+    const watchlist=ownerMeta()?.watchlist||[];
+    const response=await fetch('/api/account/portfolio',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({ledger,watchlist,revision}),cache:'no-store',credentials:'same-origin',signal:AbortSignal.timeout(15000)});
     const value=await response.json();
     if(!currentOwner())return;
     if(response.status===409){publish({conflict:{local:pendingSave||ledger,remote:value,revision:value.revision},sync:'Review saved versions'});return;}
     if(!response.ok)throw new Error(value.error||'Account save failed.');
-    revision=value.revision;synced=JSON.stringify(ledger);localStorage.setItem(ownerMetaKey(id),JSON.stringify({revision,synced,watchlist:state.watchlist}));
+    revision=value.revision;synced=JSON.stringify(ledger);localStorage.setItem(ownerMetaKey(id),JSON.stringify({revision,synced,watchlist:state.watchlist,syncedWatchlist:value.watchlist||watchlist}));
     publish({sync:pendingSave?'Saving…':'Saved to your account'});
   }catch{if(currentOwner()){pendingSave=pendingSave||ledger;publish({sync:'Saved on this browser · account sync unavailable'});}}
   finally{saving=false;if(pendingSave&&state.sync==='Saving…'&&!state.conflict)saveTimer=setTimeout(flushOwnerSave,750);}
@@ -99,11 +111,11 @@ export function resolveAccountConflict(choice){
   if(!ledger)throw new Error('This saved version has no paper account.');
   localStorage.setItem(PAPER_STORAGE,JSON.stringify(ledger));
   publish({conflict:null,sync:'Saving…'});notifyPaper();
-  if(choice==='account'){pendingSave=null;synced=JSON.stringify(ledger);localStorage.setItem(ownerMetaKey(ownerCacheId(state.session)),JSON.stringify({revision,synced,watchlist:conflict.remote.watchlist||[]}));publish({sync:'Saved to your account',watchlist:conflict.remote.watchlist||[]});}
+  if(choice==='account'){pendingSave=null;synced=JSON.stringify(ledger);const watchlist=conflict.remote.watchlist||[];localStorage.setItem(ownerMetaKey(ownerCacheId(state.session)),JSON.stringify({revision,synced,watchlist,syncedWatchlist:watchlist}));publish({sync:'Saved to your account',watchlist});}
   else queueOwnerSave(ledger);
 }
 export function toggleSavedMarket(ticker){
-  if(!/^KX[A-Z0-9_.]{1,40}-[A-Z0-9_.-]+$/.test(ticker)||ticker.includes('..'))return;
+  if(typeof ticker!=='string'||!/^[A-Za-z0-9_.-]{1,140}$/.test(ticker)||ticker==='.'||ticker.includes('..'))throw new Error('This contract ID could not be saved.');
   assertPaperSession();const removed=state.watchlist.includes(ticker),watchlist=removed?state.watchlist.filter(value=>value!==ticker):[...state.watchlist,ticker];
   if(watchlist.length>200)throw new Error('Your watchlist has reached 200 contracts. Remove a contract before saving another.');
   if(state.session.kind==='owner'){

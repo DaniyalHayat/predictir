@@ -16,12 +16,16 @@ locals {
     }, local.access_requests.push == null ? {} : {
     PREDICTIR_ACCESS_VAPID_PUBLIC_KEY = local.access_requests.push.public_key
   })
+  google_access_environment = local.google_access == null ? {} : {
+    PREDICTIR_GOOGLE_ACCESS    = "1"
+    PREDICTIR_GOOGLE_CLIENT_ID = local.google_access.client_id
+  }
 
   front_environment = merge(local.private_share_environment, {
     PORT           = "3000"
     PREDICTIR_MODE = var.profile
     APP_ORIGIN     = local.public_origin
-  }, local.live ? local.owner_front_environment : {}, local.access_environment)
+  }, local.live ? local.owner_front_environment : {}, local.access_environment, local.google_access_environment)
 
   backend_environment = merge(local.private_share_environment, {
     PORT           = "8780"
@@ -52,6 +56,7 @@ locals {
     canary-token-sha256   = "PREDICTIR_CANARY_TOKEN_HASH"
     access-owner          = "PREDICTIR_ACCESS_OWNER_HASH"
     access-push           = "PREDICTIR_ACCESS_VAPID_PRIVATE_KEY"
+    access-google         = "PREDICTIR_GOOGLE_CLIENT_SECRET"
   }
 }
 

@@ -31,3 +31,5 @@
 .card .approve:hover:not(:disabled){background:#b5daff}
 .card .decline{background:#2a171c;color:#ffc4cc;border-color:#78424d}
 .card .decline:hover:not(:disabled){background:#41232c}
+.form small{color:#c0cbe1;line-height:1.4}
+.privacy{display:inline-flex;align-items:center;min-height:40px;color:#c0cbe1;font-size:.875rem;text-underline-offset:3px}

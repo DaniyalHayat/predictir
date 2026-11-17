@@ -100,9 +100,11 @@ export function bookMetrics(payload, contracts = 100) {
   const crossed = bid !== null && ask !== null && bid > ask, valid = bid !== null && ask !== null && !crossed;
   let remaining = contracts, cost = 0, filled = 0;
   if (!crossed) for (const [price,quantity] of asks) { const take = Math.min(remaining,quantity); cost += take*price; filled += take; remaining -= take; if (remaining <= 0) break; }
-  const depth = ask !== null && !crossed ? asks.filter(([p]) => p <= ask + .02 + 1e-12).reduce((sum,[,q]) => sum+q,0) : null;
+  const askDepth = ask !== null && !crossed ? asks.filter(([p]) => p <= ask + .02 + 1e-12).reduce((sum,[,q]) => sum+q,0) : null;
+  const bidDepth = bid !== null && !crossed ? bids.filter(([p]) => p >= bid - .02 - 1e-12).reduce((sum,[,q]) => sum+q,0) : null;
   return { book_bid: bid, book_ask: ask, book_spread_cents: valid ? rounded((ask-bid)*100) : null, book_midpoint: valid ? rounded((ask+bid)/2) : null,
-    ask_depth_2c: rounded(depth), sim_requested: contracts, sim_filled: rounded(filled), sim_fill_ratio: rounded(filled/contracts), sim_cost: rounded(cost),
+    book_bid_size: rounded(bids[0]?.[1] ?? null), book_ask_size: rounded(asks[0]?.[1] ?? null),
+    ask_depth_2c: rounded(askDepth), bid_depth_2c: rounded(bidDepth), sim_requested: contracts, sim_filled: rounded(filled), sim_fill_ratio: rounded(filled/contracts), sim_cost: rounded(cost),
     sim_vwap: filled ? rounded(cost/filled) : null, sim_slippage_cents: filled ? rounded((cost/filled-ask)*100) : null,
     book_state: crossed ? "crossed" : valid ? "two-sided" : bids.length || asks.length ? "one-sided" : "empty" };
 }

@@ -8,6 +8,7 @@ locals {
   readiness_alert      = local.saved_logs && local.apps && var.enable_database_readiness_alert
   runtime_metric_alert = local.live && local.apps && var.enable_runtime_metric_alert
   access_requests      = local.live && local.apps && var.private_share_access_enabled ? var.live_access_requests : null
+  google_access        = local.live && local.apps && var.private_share_access_enabled ? var.live_google_access : null
 
   postgres_monthly_base_usd = var.location == "centralus" ? 18.69 : 16.59
   minimum_approval_usd      = var.profile == "live" ? 25 : 1
@@ -88,8 +89,8 @@ resource "terraform_data" "release_approval" {
     }
 
     precondition {
-      condition = var.live_access_requests == null ? true : (
-        local.access_requests == null || var.live_secrets == null ? false : (
+      condition = var.live_access_requests == null && var.live_google_access == null ? true : (
+        !local.live || !local.apps || !var.private_share_access_enabled || var.live_secrets == null ? false : (
           alltrue([for uri in local.access_secret_uris :
             startswith(uri, "https://${lower(element(reverse(split("/", var.live_secrets.vault_resource_id)), 0))}.vault.azure.net/secrets/")
           ]) &&
@@ -97,7 +98,7 @@ resource "terraform_data" "release_approval" {
           length(setintersection(local.access_secret_names, local.runtime_secret_names)) == 0
         )
       )
-      error_message = "Access requests require the live private preview and distinct secrets in its existing Key Vault."
+      error_message = "Access requests and Google sign-in require the live private preview and distinct secrets in its existing Key Vault."
     }
 
     precondition {
@@ -181,8 +182,11 @@ resource "azurerm_role_assignment" "registry_pull" {
 }
 
 locals {
-  access_secret_uris = local.access_requests == null ? [] : concat(
-    [local.access_requests.owner_hash_uri], local.access_requests.push == null ? [] : [local.access_requests.push.private_key_uri]
+  access_secret_uris = concat(
+    local.access_requests == null ? [] : concat(
+      [local.access_requests.owner_hash_uri], local.access_requests.push == null ? [] : [local.access_requests.push.private_key_uri]
+    ),
+    local.google_access == null ? [] : [local.google_access.client_secret_uri]
   )
   access_secret_names = [for uri in local.access_secret_uris : try(lower(split("/", uri)[4]), "")]
   runtime_secret_names = var.live_secrets == null ? [] : [
@@ -196,7 +200,9 @@ locals {
   front_secrets = local.live && var.live_secrets != null ? merge({
     edge      = var.live_secrets.edge_secret_uri
     assistant = var.live_secrets.assistant_secret_uri
-  }, local.canary_secrets, local.access_requests == null ? {} : { access-owner = local.access_requests.owner_hash_uri }) : {}
+    }, local.canary_secrets, local.access_requests == null ? {} : { access-owner = local.access_requests.owner_hash_uri },
+    local.google_access == null ? {} : { access-google = local.google_access.client_secret_uri }
+  ) : {}
 
   backend_secrets = local.live && var.live_secrets != null ? merge({
     edge        = var.live_secrets.edge_secret_uri

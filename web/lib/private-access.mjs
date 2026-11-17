@@ -84,9 +84,20 @@ export function privateAccessResponse(request,env=process.env,now=Date.now()){
   return Response.json({error:'A private Predictir link is required.'},{status:401,headers:PRIVATE_HEADERS});
 }
 export function publicAccessPath(pathname){
-  return ['/access','/access/manage','/access/manifest.webmanifest','/access/push.js','/access/icon-192.png','/access/icon-512.png',
+  return ['/privacy','/access','/access/manage','/access/manifest.webmanifest','/access/push.js','/access/icon-192.png','/access/icon-512.png',
     '/api/access/request','/api/access/request/status','/api/access/manage','/api/access/manage/sign-in',
-    '/api/access/redeem','/api/access/logout','/healthz','/favicon.ico','/favicon.svg','/robots.txt','/hibp-verification.txt','/google7653305cfae6f81b.html'].includes(pathname)||pathname.startsWith('/_next/static/');
+    '/api/access/redeem','/api/access/logout','/api/access/session','/api/access/google/start','/api/access/google/callback',
+    '/healthz','/favicon.ico','/favicon.svg','/robots.txt','/hibp-verification.txt','/google7653305cfae6f81b.html'].includes(pathname)||pathname.startsWith('/_next/static/');
+}
+export function previewSessionResponse(request,env=process.env,now=Date.now()){
+  const headers=new Headers({...PRIVATE_HEADERS,Vary:'Cookie'});
+  const site=request.headers.get('sec-fetch-site');
+  if(site&&site!=='same-origin'&&site!=='none'||new URL(request.url).search)return new Response(null,{status:403,headers});
+  const cookie=request.headers.get('cookie');
+  if(!shareAccessKind(cookie,env,now))return new Response(null,{status:401,headers});
+  const renewal=renewApprovedShareCookie(cookie,env,now);
+  if(renewal)headers.append('Set-Cookie',renewal);
+  return new Response(null,{status:204,headers});
 }
 export function accessOriginAllowed(request,env){
   const origin=request.headers.get('origin');if(!origin)return false;

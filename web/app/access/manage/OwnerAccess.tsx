@@ -272,7 +272,8 @@ export default function OwnerAccess({notificationOnly=false}:{notificationOnly?:
       {state==='unavailable'&&<button onClick={()=>void refresh()}>Try again</button>}
       {state==='locked'&&<form className={styles.form} method="post" action="/api/access/manage/sign-in" onSubmit={signIn}>
         <label htmlFor="owner-code">Owner code</label>
-        <input id="owner-code" name="code" type="password" autoComplete="current-password" maxLength={80} required/>
+        <small id="owner-code-description">Use the code issued for Predictir’s approval queue.</small>
+        <input id="owner-code" name="code" type="password" autoComplete="off" aria-describedby="owner-code-description" maxLength={80} required/>
         <button disabled={busy}>{busy?'Signing in…':'Sign in'}</button>
       </form>}
       {state==='ready'&&<>
@@ -317,6 +318,7 @@ export default function OwnerAccess({notificationOnly=false}:{notificationOnly?:
         </ul>}
       </>}
       <p role="status" aria-live="polite">{message}</p>
+      <a href="/privacy" className={styles.privacy}>Privacy</a>
     </section>
   </main>{alert}</>;
 }

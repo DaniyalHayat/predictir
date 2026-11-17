@@ -5,9 +5,10 @@ import {readFile} from 'node:fs/promises';
 test('private access route excludes workspace styles and controls from its shared layout',async()=>{
   const root=await readFile(new URL('../app/layout.tsx',import.meta.url),'utf8');
   const workspace=await readFile(new URL('../app/(workspace)/layout.tsx',import.meta.url),'utf8');
+  const workspacePage=await readFile(new URL('../app/(workspace)/page.tsx',import.meta.url),'utf8');
   const access=await readFile(new URL('../app/access/Access.tsx',import.meta.url),'utf8');
   assert.doesNotMatch(root,/Analytics|PrivateWorkspaceControls|workspace\.css|\.css['"]/);
-  assert.match(workspace,/PrivateWorkspaceControls/);
+  assert.match(workspacePage,/<PrivateWorkspaceControls\s*\/>/);
   assert.match(workspace,/Analytics/);
   assert.doesNotMatch(access,/\.css['"]/);
 });
