@@ -438,7 +438,7 @@ export async function assistantResponse(request,{createClient,generate=streamTex
         if(Buffer.byteLength(JSON.stringify(messages))>60000)throw new RangeError('The research context limit was reached');
         if(stepNumber===0&&tools.get_research)return {toolChoice:{type:'tool',toolName:'get_research'}};
         if(stepNumber===(tools.get_research?1:0)&&tools.analyze_execution_lab&&!missingIndependentForecast(checkedResearch)&&
-          /\b(execution lab|order flow|hawkes|inventory skew|execution schedule)\b/i.test(messages.at(-1)?.content||''))return {toolChoice:{type:'tool',toolName:'analyze_execution_lab'}};
+          /\b(execution lab|order flow|hawkes|inventory skew|execution schedule)\b/i.test(question))return {toolChoice:{type:'tool',toolName:'analyze_execution_lab'}};
         return stepNumber>=2?{toolChoice:'none'}:undefined;
       },onFinish:async()=>{await client?.close();},onError:async()=>{await client?.close();}});
     const encoder=new TextEncoder(),body=new ReadableStream({async start(controller){let sent=false,failed=false,answer='',pendingText='';
