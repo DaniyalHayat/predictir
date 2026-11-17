@@ -1,19 +1,31 @@
 import {validateTicker,marketDetails,request} from '../live.mjs';
-export function parseMarketInput(value) {
+function parseMarketScope(value) {
   if(typeof value!=='string'||value.length>500)throw new RangeError('Paste a Kalshi market URL or exact ticker');
-  let text=value.trim();
+  const text=value.trim();
   if(/^https?:/i.test(text)) {
-    const url=new URL(text);
-    if(url.protocol!=='https:'||!['kalshi.com','www.kalshi.com'].includes(url.hostname)||!url.pathname.startsWith('/markets/'))throw new RangeError('Use an official Kalshi market URL');
-    text=url.pathname.split('/').filter(Boolean).at(-1);
+    let url;
+    try{url=new URL(text);}catch{throw new RangeError('Use an official Kalshi market URL');}
+    if(!['https://kalshi.com','https://www.kalshi.com'].includes(url.origin)||url.username||url.password||!url.pathname.startsWith('/markets/'))throw new RangeError('Use an official Kalshi market URL');
+    const segment=url.pathname.slice('/markets/'.length).split('/').filter(Boolean).at(-1);
+    const pathTicker=validateTicker(segment?.toUpperCase());
+    const selected=url.searchParams.getAll('op_market_ticker');
+    if(selected.length>1)throw new RangeError('Choose one contract in the Kalshi market URL');
+    if(selected.length)return {ticker:validateTicker(selected[0].toUpperCase()),eventTicker:pathTicker};
+    return {ticker:pathTicker};
   }
-  return validateTicker(text.toUpperCase());
+  return {ticker:validateTicker(text.toUpperCase())};
+}
+export function parseMarketInput(value) {
+  return parseMarketScope(value).ticker;
 }
 export async function resolveContracts(value) {
-  const ticker=parseMarketInput(value);
+  const {ticker,eventTicker}=parseMarketScope(value);
   let markets=[];
-  try{markets=[(await marketDetails(ticker)).market];}
-  catch(error){if(error.upstream_status!==404)throw error;
+  try{
+    const {market}=await marketDetails(ticker);
+    if(eventTicker&&market.event_ticker!==eventTicker)throw new RangeError('The selected contract does not belong to this Kalshi event');
+    markets=[market];
+  }catch(error){if(eventTicker||error.upstream_status!==404)throw error;
     markets=(await request('/markets',{event_ticker:ticker,limit:'200'})).data.markets||[];}
   return {contracts:markets.map(m=>({ticker:m.ticker,event_ticker:m.event_ticker,title:m.title,
     subtitle:m.yes_sub_title||m.subtitle||m.ticker,status:m.status,close_time:m.close_time})),partial:markets.length>=200};

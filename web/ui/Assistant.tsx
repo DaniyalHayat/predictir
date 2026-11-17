@@ -33,13 +33,14 @@ function requestHistory(history:Message[]){
   return rows;
 }
 
-type Props=Snapshot&{onClose:()=>void;model?:Model;launch?:Launch};
+type Props=Snapshot&{onClose:()=>void;model?:Model;launch?:Launch;generativeFollowUps?:boolean};
 
-export default function Assistant({market,book,fees,research,history,onClose,model='validated',launch}:Props){
+export default function Assistant({market,book,fees,research,history,onClose,model='validated',launch,generativeFollowUps=false}:Props){
   const [messages,setMessages]=useState<Message[]>([]),[input,setInput]=useState(''),[stage,setStage]=useState(''),[error,setError]=useState('');
   const [mode,setMode]=useState<'answer'|'lab'>('answer'),[evidence,setEvidence]=useState<Evidence|undefined>(launch?.evidence),[snapshot,setSnapshot]=useState<Snapshot|null>(null);
   const [compact,setCompact]=useState(false);
-  const cancel=useRef<AbortController|null>(null),turns=useRef<Message[]>([]),retryHistory=useRef<Message[]|null>(null);
+  const cancel=useRef<AbortController|null>(null),turns=useRef<Message[]>([]);
+  const retryTurn=useRef<{messages:Message[];typed:boolean}|null>(null);
   const scroller=useRef<HTMLDivElement|null>(null),panel=useRef<HTMLElement|null>(null),prepared=useRef(false);
   const followLatest=useRef(false),executionControls=launch?.executionControls;
   const busy=Boolean(stage),automatic=Boolean(launch?.question),deep=launch?.detail==='full';
@@ -76,13 +77,14 @@ export default function Assistant({market,book,fees,research,history,onClose,mod
     const node=event.currentTarget;
     followLatest.current=node.scrollHeight-node.scrollTop-node.clientHeight<55;
   }
-  async function send(question=input,retry=false){
+  async function send(question=input,retry=false,typed=false){
     const prior=turns.current;
     const asked=question.trim();
-    const next:Message[]|null=retry?retryHistory.current:asked?[...prior,{role:'user',content:asked}]:null;
-    if(!next||cancel.current)return;
+    const turn=retry?retryTurn.current:asked?{messages:[...prior,{role:'user' as const,content:asked}],typed}:null;
+    if(!turn||cancel.current)return;
+    const next=turn.messages;
     if(!retry)setInput('');
-    retryHistory.current=null;setError('');setMode('answer');
+    retryTurn.current=null;setError('');setMode('answer');
     followLatest.current=next.length>1||!automatic;
     setStage(!prepared.current&&launch?.prepare?'reporting':'research');
     setMessages([...next,{role:'assistant',content:''}]);
@@ -97,7 +99,8 @@ export default function Assistant({market,book,fees,research,history,onClose,mod
         prepared.current=true;
       }
       setStage('research');
-      const body=JSON.stringify(assistantPayload(market.ticker,model,requestHistory(next),launch));
+      const guided=!(turn.typed&&generativeFollowUps&&launch?.panel==='analysis');
+      const body=JSON.stringify(assistantPayload(market.ticker,model,requestHistory(next),guided?launch:undefined));
       const requestAnswer=()=>fetch('/api/assistant',{method:'POST',headers:{'Content-Type':'application/json'},signal:controller.signal,body});
       let response=await requestAnswer();
       const retryDelay=retryAfterMilliseconds(response.headers.get('retry-after'),{fallback:0,maximum:86400000});
@@ -137,7 +140,7 @@ export default function Assistant({market,book,fees,research,history,onClose,mod
       if(cancel.current===controller){turns.current=[...next,{role:'assistant',content:text}];setMessages(turns.current);}
     }catch(e){
       if(cancel.current!==controller)return;
-      retryHistory.current=next;
+      retryTurn.current=turn;
       setError(controller.signal.aborted?controller.signal.reason?.name==='TimeoutError'?'The response timed out.':'Response stopped.':e instanceof Error?e.message:'The assistant is temporarily unavailable.');
     }finally{
       clearTimeout(deadline);reader?.releaseLock();
@@ -198,7 +201,7 @@ export default function Assistant({market,book,fees,research,history,onClose,mod
       {snapshot&&<div hidden={mode!=='lab'}><ExplanationLab active={mode==='lab'} snapshot={snapshot} evidence={evidence} onEvidence={setEvidence} onRefresh={captureInputs} model={model}/></div>}
     </div>
     <div className="assistant-status" role="status">{state&&<>{state==='Answer ready'?<Check size={14}/>:busy?<span className="assistant-pulse"/>:null}{state}</>}</div>
-    <form className="assistant-form" onSubmit={event=>{event.preventDefault();send();}}>
+    <form className="assistant-form" onSubmit={event=>{event.preventDefault();send(input,false,true);}}>
       <label className="sr-only" htmlFor="assistant-question">Question about this contract</label>
       <textarea id="assistant-question" data-initial-focus={!automatic?'':undefined} value={input} onChange={e=>setInput(e.target.value)} placeholder="Ask a follow-up…" rows={1} maxLength={2000}/>
       {busy?<button type="button" className="send" aria-label="Stop response" onClick={()=>cancel.current?.abort()}><Square size={16}/></button>:

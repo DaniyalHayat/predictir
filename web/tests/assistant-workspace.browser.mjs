@@ -143,6 +143,13 @@ try{
   assert.equal(await assistant.getByText('Fixture reasoning.',{exact:true}).isVisible(),true);
   await assistant.getByText('Open source links',{exact:false}).click();
   assert.equal(await assistant.getByRole('link',{name:'League record'}).getAttribute('href'),'https://league.example/results');
+  const typed='Walk me through the current settlement conditions.';
+  await assistant.getByRole('textbox',{name:'Question about this contract'}).fill(typed);
+  await assistant.getByRole('button',{name:'Send question'}).click();
+  await assistant.getByText('Fixture answer for KXTEST-ALPHA (undefined).',{exact:true}).waitFor();
+  assert.deepEqual(Object.keys(payloads.at(-1)).sort(),['messages','model','ticker']);
+  assert.equal(payloads.at(-1).ticker,'KXTEST-ALPHA');
+  assert.equal(payloads.at(-1).messages.at(-1).content,typed);
   await assistant.getByRole('button',{name:'Test the idea',exact:true}).click();
   const ideas=assistant.getByRole('region',{name:'Contract scenario tools'});
   await ideas.getByRole('button',{name:'Vanishing depth',exact:true}).waitFor();
