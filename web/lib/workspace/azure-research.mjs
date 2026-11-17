@@ -130,7 +130,7 @@ function modelPriceComparison(contract,research,now){
   return lines.join('\n\n');
 }
 
-function paperFacts(research,ticker,now,full){
+export function paperFacts(research,ticker,now,full){
   return rows(research?.paper_scenarios).filter(row=>row?.ticker===ticker&&['YES','NO'].includes(row.side)&&fresh(row.quote_as_of,now,90000)&&
     Number.isFinite(row.contracts)&&row.contracts>0&&cents(row.break_even)&&dollars(row.cost)).slice(0,2).map(row=>{
     const breakdown=dollars(row.fee)?', including '+dollars(row.fee)+' in modeled fees':'';

@@ -221,16 +221,24 @@ test('assistant uses real MCP-shaped tools, budgets before generation and closes
   const previous={backend:process.env.MARKET_BACKEND_URL,secret:process.env.ASSISTANT_SERVICE_SECRET};process.env.MARKET_BACKEND_URL='http://127.0.0.1:9876';process.env.ASSISTANT_SERVICE_SECRET=secret;
   t.after(()=>{for(const [key,value] of [['MARKET_BACKEND_URL',previous.backend],['ASSISTANT_SERVICE_SECRET',previous.secret]])if(value===undefined)delete process.env[key];else process.env[key]=value;});
   const calls=[];let closed=false;
-  const client={listTools:async()=>({tools:[{name:'get_research',description:'Public research',inputSchema:{type:'object',properties:{ticker:{type:'string'}},required:['ticker']}}]}),
+  const client={listTools:async()=>({tools:['get_research','analyze_execution_lab'].map(name=>({name,description:'Public research',inputSchema:{type:'object',properties:{ticker:{type:'string'}},required:['ticker']}}))}),
     callTool:async input=>{calls.push(input);return {content:[{type:'text',text:JSON.stringify({
       ticker,as_of:new Date().toISOString(),opinion:{side:'PASS'},
       rules:{primary:'The named event must finish before the published deadline.',secondary:'Only a final result qualifies.'},
       drivers:[{kind:'historical_reference',name:'Dated fixture record',detail:'It records a preliminary result.',url:'https://official.example/fixture'}],
       sources:[{url:'javascript:alert(1)'},{url:'https://user:private-credential-sentinel@example.com/'},{url:source}]
     })}]};},close:async()=>{closed=true;}};
-  const request=()=>new Request('https://predictir.dev/api/assistant',{method:'POST',headers:{Origin:'https://predictir.dev','Content-Type':'application/json'},body:JSON.stringify({ticker,messages:[{role:'user',content:'Explain the model.'}]})});
+  const request=()=>new Request('https://predictir.dev/api/assistant',{method:'POST',headers:{Origin:'https://predictir.dev','Content-Type':'application/json'},body:JSON.stringify({ticker,messages:[{role:'user',content:'Explain the order flow model.'}]})});
   const response=await assistantResponse(request(),{createClient:async()=>client,fetcher:async(url,options)=>{calls.push({reserve:url.pathname,body:JSON.parse(options.body)});return {reserved_usd:.025};},
-    generate:options=>({fullStream:(async function*(){assert.deepEqual(options.prepareStep({stepNumber:0,messages:[]}).toolChoice,{type:'tool',toolName:'get_research'});const result=await options.tools.get_research.execute({ticker});assert.equal(result.opinion.side,'PASS');assert.equal(options.prepareStep({stepNumber:2,messages:[]}).toolChoice,'none');yield {type:'text-delta',text:'PASS: no supported edge.'};await options.onFinish();})()})});
+    generate:options=>({fullStream:(async function*(){
+      assert.deepEqual(options.prepareStep({stepNumber:0,messages:[]}).toolChoice,{type:'tool',toolName:'get_research'});
+      const result=await options.tools.get_research.execute({ticker});
+      assert.equal(result.opinion.side,'PASS');
+      assert.deepEqual(options.prepareStep({stepNumber:1,messages:[{role:'tool',content:'Research result'}]}).toolChoice,{type:'tool',toolName:'analyze_execution_lab'});
+      assert.equal(options.prepareStep({stepNumber:2,messages:[]}).toolChoice,'none');
+      yield {type:'text-delta',text:'PASS: no supported edge.'};
+      await options.onFinish();
+    })()})});
   const answer=await response.text();assert.match(answer,/PASS/);assert.ok(answer.includes(source));assert.match(answer,/Sources checked/);assert.ok(!answer.includes('javascript:'));assert.ok(!answer.includes('private-credential-sentinel'));
   assert.match(answer,/^PASS: no supported edge\./);
   assert.match(answer,/^Settlement rule: .* published deadline\. Only a final result qualifies\.$/m);
@@ -251,6 +259,32 @@ test('provider errors, interrupted streams and empty answers show usable text wi
     const request=new Request('https://predictir.dev/api/assistant',{method:'POST',headers:{Origin:'https://predictir.dev','Content-Type':'application/json'},body:JSON.stringify({ticker,messages:[{role:'user',content:'Explain.'}]})});
     const response=await assistantResponse(request,{createClient:async()=>client,fetcher:async()=>{reserved=true;return {reserved_usd:.025};},generate:()=>({fullStream:(async function*(){if(value.parts===null)throw new Error(marker);yield*value.parts;})()})});
     const text=await response.text();assert.match(response.headers.get('content-type'),/text\/plain/);assert.match(text,value.message);assert.ok(!text.includes(marker));assert.equal(closed,true);assert.equal(reserved,true);
+  }
+});
+test('unsupported forecasts reserve the paper decision and all-in cost for verified output',async()=>{
+  const as_of=new Date().toISOString(),prepared={ticker,as_of,forecast:{probability:null,reason:'No forecast.'},
+    rules:{primary:'A final recorded vote qualifies.'},opinion:{side:'PASS'},
+    paper_scenarios:[{ticker,quote_as_of:as_of,side:'YES',contracts:20,cost:10,fee:1,break_even:.5}]};
+  const client={listTools:async()=>({tools:[{name:'get_research',description:'Public research',inputSchema:{type:'object'}}]}),
+    callTool:async()=>({content:[{type:'text',text:JSON.stringify(prepared)}]}),close:async()=>{}};
+  const request=()=>new Request('https://predictir.dev/api/assistant',{method:'POST',body:JSON.stringify({
+    ticker,messages:[{role:'user',content:'Which action qualifies?'}]})});
+  for(const generated of ['PASS means criteria were met. The threshold is 50 cents before fees.','The recorded action must be a final vote.']){
+    const response=await assistantResponse(request(),{env:{MARKET_BACKEND_URL:'http://127.0.0.1:9876',ASSISTANT_SERVICE_SECRET:secret},
+      createClient:async()=>client,fetcher:async()=>({reserved_usd:.025}),generate:options=>({fullStream:(async function*(){
+        if(generated.startsWith('PASS'))yield {type:'text-delta',text:'The outcome is guaranteed. '};
+        const visible=await options.tools.get_research.execute({ticker});
+        assert.equal(visible.opinion,undefined);
+        assert.equal(visible.paper_scenarios,undefined);
+        assert.match(visible.response_scope,/Only explain settlement/);
+        yield {type:'text-delta',text:generated};
+      })()})});
+    const answer=await response.text();
+    assert.match(answer,/Research screen: PASS\. Supported allocation: 0 contracts\./);
+    assert.match(answer,/\$10\.00 for 20 contracts, including \$1\.00 in modeled fees/);
+    assert.match(answer,/all-in break-even is 50\.0¢/);
+    assert.doesNotMatch(answer,/outcome is guaranteed|criteria were met|before fees/);
+    if(generated.startsWith('The recorded'))assert.ok(answer.startsWith(generated));
   }
 });
 test('assistant geographic restriction runs before any paid reservation',async t=>{
