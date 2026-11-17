@@ -56,7 +56,7 @@ export function boundPacket(value,maximum=14000){
   }
   const lean={ticker:value.ticker,title:value.title,as_of:value.as_of,summary:value.summary,opinion:value.opinion,
     account_balances_available:value.account_balances_available,units:value.units,forecast:value.forecast,decision:value.decision,
-    paper_scenarios:value.paper_scenarios,market_signal:value.market_signal,rules:value.rules,evidence:value.evidence,
+    paper_scenarios:value.paper_scenarios,market_signal:value.market_signal,rules:value.rules,drivers:value.drivers,evidence:value.evidence,
     reporting_status:value.reporting_status,model_context:value.model_context,sources:value.sources,
     scope:'Additional details omitted to keep the research packet bounded.'};
   if(Buffer.byteLength(JSON.stringify(lean))<=maximum)return lean;
@@ -65,7 +65,7 @@ export function boundPacket(value,maximum=14000){
     forecast:forecast?Object.fromEntries(['probability','interval','eligible','independent_forecast','experimental','model_name',
       'source_as_of','source_url','max_source_age_seconds','reason','outcomes','expected_settlement_value','interval_kind','evidence',
       'release_reason'].filter(key=>forecast[key]!==undefined).map(key=>[key,forecast[key]])):undefined,
-    rules:value.rules?{primary:String(value.rules.primary||'').slice(0,1800),close_time:value.rules.close_time}:undefined,
+    rules:value.rules?{primary:String(value.rules.primary||'').slice(0,1800),secondary:String(value.rules.secondary||'').slice(0,700),close_time:value.rules.close_time}:undefined,
     evidence:(value.evidence||[]).slice(0,5),reporting_status:value.reporting_status,model_context:value.model_context,
     sources:(value.sources||[]).filter(row=>typeof row.url==='string'&&row.url.length<=1800).slice(0,6),
     paper_scenarios:(value.paper_scenarios||[]).slice(0,2),

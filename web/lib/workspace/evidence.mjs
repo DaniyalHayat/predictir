@@ -55,6 +55,8 @@ export function evidenceSourceLinks(market,{sports,topic=evidenceTopic(market),s
   }
   const ticker=market?.ticker||'';
   const references=[
+    [/^KXIMPEACH-/,'U.S. House Clerk roll calls','https://clerk.house.gov/Votes','Open the vote and read the question. Passing a motion to table an impeachment resolution does not pass the resolution itself.'],
+    [/^KXIMPEACH-/,'U.S. House impeachment procedure','https://history.house.gov/Institution/Origins-Development/Impeachment/','Check the House action that meets the settlement rule, the date, and whether the president was still in office.'],
     [/^KXTSAD?(?:-|$)/,'TSA checkpoint travel numbers','https://www.tsa.gov/travel/passenger-volumes','Match the reported passenger count to the exact calendar day.'],
     [/^KXCPI/,'BLS CPI release schedule','https://www.bls.gov/schedule/news_release/cpi.htm','Check release date and monthly versus annual change.'],
     [/^KXU3/,'BLS employment release schedule','https://www.bls.gov/schedule/news_release/empsit.htm','Check the U-3 unemployment rate and observation month.'],

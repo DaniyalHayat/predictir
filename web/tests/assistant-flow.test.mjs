@@ -120,6 +120,27 @@ test('fresh quotes never present an expired source estimate as a current model c
   assert.doesNotMatch(answer,/independent model estimates 60.0%/);
 });
 
+test('brief impeachment analysis separates historical House actions and reproduces both paper thresholds',async()=>{
+  const now=Date.now(),as_of=new Date(now).toISOString(),ticker='KXIMPEACH-29-JAN20';
+  const rules={primary:'The House of Representatives must pass an impeachment resolution.'};
+  const packets=new Map([
+    ['get_contract',{ticker,market:{ticker},rules,book:{as_of},quotes:{yes_ask_usd:.67,no_ask_usd:.34}}],
+    ['get_research',{ticker,as_of,rules,forecast:{probability:null,reason:'No independent model covers this contract.'},
+      opinion:{side:'PASS'},drivers:[{kind:'historical_reference',name:'September 15, 2026 roll call',
+        detail:'The House voted on a motion to table.',url:'https://clerk.house.gov/Votes/2026298'}],
+      paper_scenarios:[{ticker,quote_as_of:as_of,side:'YES',contracts:29,cost:19.88,break_even:19.88/29},
+        {ticker,quote_as_of:as_of,side:'NO',contracts:56,cost:19.92,break_even:19.92/56}]}],
+  ]);
+  const {answer}=await azureResearchAnswer({question:assistantContext('analysis',ticker,{detail:'brief'}).question,
+    ticker,panel:'analysis',detail:'brief',tools:[...packets.keys()],packets,explain:{contract:()=>'',math:()=>''},now});
+  assert.match(answer,/PASS.*0 contracts/);
+  assert.match(answer,/No independent model covers/);
+  assert.match(answer,/P\(YES\) is above 68\.55%/);
+  assert.match(answer,/P\(YES\) is below 64\.43%/);
+  assert.match(answer,/Dated House records/);
+  assert.match(answer,/^\[September 15, 2026 roll call\]\(https:\/\/clerk\.house\.gov\/Votes\/2026298\) /m);
+});
+
 test('automatic Ask Why returns the selected settlement rule when depth and live reporting exceed their deadline',async t=>{
   t.mock.timers.enable({apis:['setTimeout']});
   const ticker='KXTEST-ALPHA',now=Date.now(),as_of=new Date(now).toISOString();

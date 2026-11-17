@@ -9,6 +9,7 @@ type ContractLabel = {
 type Ticker = {ticker: string};
 type Market = Ticker & ContractLabel & {
   category?: string;
+  series?: string;
   close_time?: string;
   status?: string;
   result?: string;
@@ -60,6 +61,18 @@ export function contractTitle(market?: ContractLabel | null): string {
   const title = market.title || market.ticker || 'Choose a contract';
   const outcome = market.yes_sub_title || market.subtitle;
   return outcome && !title.toLocaleLowerCase().includes(outcome.toLocaleLowerCase()) ? `${title} · ${outcome}` : title;
+}
+
+export function contractExchangeURL(market: Market, series = market.series || market.ticker.split('-')[0]): string {
+  const identifier = /^[A-Z0-9][A-Z0-9_.-]{0,139}$/i;
+  const root = 'https://kalshi.com/markets';
+  if (!identifier.test(series) || series.includes('..')) return root;
+  const seriesURL = `${root}/${series.toLowerCase()}`;
+  const event = market.event_ticker;
+  if (!event || !identifier.test(event) || event.includes('..')) return seriesURL;
+  const url = new URL(`${seriesURL}/-/${event.toLowerCase()}`);
+  url.searchParams.set('op_market_ticker', market.ticker);
+  return url.href;
 }
 
 export function refreshMarketRows<T extends Ticker>(current: readonly T[], incoming: readonly T[]): T[] {

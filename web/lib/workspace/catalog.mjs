@@ -6,6 +6,7 @@ import {retainMarketHistory} from './warehouse.mjs';
 
 export const WORKSPACE_CATEGORIES = [
   {id:'sports',name:'Sports',sourceCategories:['Sports'],preferred:['KXNBAGAME','KXNFLGAME','KXEPLGAME','KXUCLGAME']},
+  {id:'politics',name:'Politics',preferred:['KXIMPEACH','KXTRUMPREMOVE','KXTRUMPRESIGN'],marketLimit:25},
   {id:'macro',name:'Economy',preferred:['KXCPI','KXU3','KXFEDDECISION']},
   {id:'crypto',name:'Crypto',preferred:['KXBTC15M','KXETH15M','KXBTC','KXETH']},
   {id:'travel',name:'Travel',preferred:['KXTSAD','KXTSA','KXTSAW','KXORDPAX','KXRDUVISITS','KXBOIPASSENGERS']},
@@ -53,7 +54,7 @@ export async function workspaceMarkets(id,{maximumSeries=8,getter=request,catalo
   const catalog=await catalogGetter(id),selected=selectSeries(category,catalog.rows,maximumSeries);
   const results=[];
   for(let at=0;at<selected.length;at+=3)results.push(...await Promise.all(selected.slice(at,at+3).map(async series=>{
-    try { const response=await getter('/markets',{series_ticker:series.ticker,status:'open',limit:'200'});
+    try { const response=await getter('/markets',{series_ticker:series.ticker,status:'open',limit:String(category.marketLimit??200)});
       return {series,response}; } catch(error) {return {series,error:error.message,failure:error};}
   })));
   const byTicker=new Map(),coverage=[],errors=(catalog.errors||[]).map(error=>({source:'Series catalog',error}));
@@ -74,7 +75,8 @@ export async function workspaceMarkets(id,{maximumSeries=8,getter=request,catalo
   recordProviderStatus('Kalshi public exchange',{status:errors.length?'partial':'available',as_of:new Date().toISOString(),detail:'Bounded category catalog; exact contract coverage is shown separately.'});
   return {category:id,markets:[...byTicker.values()].sort((a,b)=>(b.volume_24h||0)-(a.volume_24h||0)),
     as_of:new Date().toISOString(),coverage,errors,partial:errors.length>0||coverage.some(c=>c.truncated),
-    scope:`Up to ${maximumSeries} source series, selected by named coverage and historical series volume; not the complete exchange`};
+    scope:id==='politics'?`Selected politics series, up to ${category.marketLimit} open markets per series`:
+      `Up to ${maximumSeries} source series, selected by named coverage and historical series volume; not the complete exchange`};
 }
 
 export function createCategorySnapshots({load=workspaceMarkets,storage=()=>cloudEnabled()?store():null,retain,now=Date.now}={}) {
@@ -130,7 +132,7 @@ export function createCategorySnapshots({load=workspaceMarkets,storage=()=>cloud
 export const categorySnapshot=createCategorySnapshots({retain:retainMarketHistory});
 export function inferCategory(market,series=[]) {
   const row=series.find(s=>market.ticker.startsWith(s.ticker+'-'));
-  return WORKSPACE_CATEGORIES.find(c=>c.preferred.some(t=>market.ticker.startsWith(t+'-')))?.id ||
+  return WORKSPACE_CATEGORIES.find(c=>c.preferred.some(t=>market.ticker===t||market.ticker.startsWith(t+'-')))?.id ||
     WORKSPACE_CATEGORIES.find(c=>(c.sourceCategories||[]).includes(row?.category))?.id || 'other';
 }
 export function inferResearchFamily(ticker) {

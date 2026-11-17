@@ -253,6 +253,15 @@ export async function fetchHeadlines(query, { fetcher = fetch, now = Date.now, s
 }
 
 function driverChecklist(category, market, seriesProfile) {
+  if (market.ticker?.startsWith('KXIMPEACH-')) return [
+    { name: 'Which House vote counts?', detail: 'Match the House Clerk’s final vote to the exact contract deadline. The vote must agree to an impeachment resolution while the president is in office. Introduction, referral, or tabling does not satisfy the rule.', url: 'https://clerk.house.gov/Votes', kind: 'verification_check' },
+    ...(market.ticker === 'KXIMPEACH-29-JAN20' ? [
+      { name: 'September 15, 2026 roll call', detail: 'The House voted 232–147 to table H.Res. 1486. The recorded vote was on the motion to table, so this roll call did not satisfy the contract.', url: 'https://clerk.house.gov/Votes/2026298', kind: 'historical_reference' },
+      { name: 'September 24, 2026 referral', detail: 'The introduced version of H.Res. 1575 records referral to the House Judiciary Committee. That procedural action did not satisfy the contract.', url: 'https://www.govinfo.gov/app/details/BILLS-119hres1575ih', kind: 'historical_reference' },
+    ] : []),
+    { name: 'What could change the case?', detail: 'Check new articles, committee or floor action, and votes on agreeing to the resolution. Verify the distinction between House impeachment and a Senate trial.', url: 'https://history.house.gov/Institution/Origins-Development/Impeachment/', kind: 'verification_check' },
+    { name: 'What would support a paper entry?', detail: 'The low end of a validated range for the side you choose must clear its all-in entry cost by more than 2 percentage points. Prior impeachment votes and current exchange prices do not establish that range.', kind: 'verification_check' },
+  ];
   const text = `${seriesProfile?.category || ''} ${market.title || ''} ${market.rules_primary || ''}`;
   const id = category?.id || (/sport|basketball|football|baseball|hockey|tennis/i.test(text) ? 'sports'
     : /election|president|senate|governor|politic/i.test(text) ? 'politics'

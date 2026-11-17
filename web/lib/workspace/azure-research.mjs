@@ -1,5 +1,6 @@
 import {planAzureResearch,rankAzureEvidence} from './azure-assistant.mjs';
 import {safePublicURL} from './source-ranking.mjs';
+import {binaryBreakEvenExplanation} from './paper-scenario.mjs';
 
 const rows=value=>Array.isArray(value)?value:[];
 const clean=(value,length=400)=>typeof value==='string'?value.replace(/[\u0000-\u001f\u007f\[\]<>]/g,' ').trim().slice(0,length):'';
@@ -124,7 +125,8 @@ function modelPriceComparison(contract,research,now){
     if(forecast.outcomes&&cents(forecast.expected_settlement_value)!==null)
       lines.push('The rules also allow a partial payout. Including that case, modeled YES settlement value is '+cents(forecast.expected_settlement_value)+' per contract.');
     lines.push('For the paper decision, compare the modeled payout with the all-in entry cost. The gap to the midpoint alone does not cover the spread, fees or uncertainty.');
-  }else lines.push('A current independent estimate is unavailable for this comparison. '+(sourceCurrent?clean(forecast?.reason,300):'The independent source timestamp is missing or outside the model’s freshness window.'));
+  }else lines.push('A current independent estimate is unavailable for this comparison. '+
+    ((sourceCurrent||cents(forecast?.probability)===null)&&clean(forecast?.reason,300)||'The independent source timestamp is missing or outside the model’s freshness window.'));
   return lines.join('\n\n');
 }
 
@@ -133,6 +135,10 @@ function paperFacts(research,ticker,now,full){
     Number.isFinite(row.contracts)&&row.contracts>0&&cents(row.break_even)&&dollars(row.cost)).slice(0,2).map(row=>{
     const breakdown=dollars(row.fee)?', including '+dollars(row.fee)+' in modeled fees':'';
     let line=`Paper ${row.side} uses ${dollars(row.cost)} for ${quantity(row.contracts)} contracts${breakdown}. The all-in break-even is ${cents(row.break_even)} per contract.`;
+    if(ticker.startsWith('KXIMPEACH-')){
+      const steps=binaryBreakEvenExplanation(row);
+      if(steps)line+=' '+steps;
+    }
     if(full&&dollars(row.win_value)&&dollars(row.lose_value)){
       line+=` Ending paper balance from this scenario is ${dollars(row.win_value)} on a full payout and ${dollars(row.lose_value)} on a zero payout.`;
       if(row.partial_payout&&dollars(row.tie_value))line+=' The tie-payout balance is '+dollars(row.tie_value)+'.';
@@ -349,7 +355,7 @@ export async function azureResearchAnswer({question,ticker,panel,detail,executio
     const interval=value=>rows(value).length===2&&value.every(row=>cents(row)!==null)?value:null;
     const packet={...research,evidence:[],paper_scenarios:rows(research.paper_scenarios).filter(Boolean),
       decision:{candidates:rows(research.decision?.candidates).filter(Boolean)},
-      forecast:validForecast?{...forecast,interval:interval(forecast.interval)}:null,
+      forecast:validForecast?{...forecast,interval:interval(forecast.interval)}:{probability:null,reason:clean(forecast?.reason,450)},
       market_signal:validSignal?{...signalData,interval:interval(signalData.interval)}:null};
     const math=/\b(?:range|probabilit(?:y|ies)|confidence|costs?|fees?|allocation|position size)\b/i.test(question);
     if(math||full&&(!panel||['analysis','paper'].includes(panel))){
@@ -367,6 +373,13 @@ export async function azureResearchAnswer({question,ticker,panel,detail,executio
       const comparison=paperFacts(research,ticker,now,full);
       if(comparison.length)parts.push('## What the paper trade looks like',...comparison);
       else if(panel==='paper')parts.push('No fresh paper fill was returned for either side at the reference budget.');
+    }
+    if(ticker.startsWith('KXIMPEACH-')&&(!panel||['analysis','paper','evidence'].includes(panel))){
+      const checks=rows(research.drivers).filter(row=>row&&(full||row.kind==='historical_reference')).slice(0,5).map(row=>{
+        const url=publicSource(row.url);
+        return [url?link({url,label:row.name}):clean(row.name,100),clean(row.detail,450)].filter(Boolean).join(' ');
+      }).filter(Boolean);
+      if(checks.length)parts.push(full?'## How to verify the decision':'## Dated House records',...checks);
     }
     if(full&&(!panel||['analysis','paper','evidence'].includes(panel))){
       const notes=fullModelNotes(research,now);

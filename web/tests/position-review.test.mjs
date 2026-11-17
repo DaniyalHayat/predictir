@@ -6,6 +6,7 @@ import {parsePositionReview,reviewPaperPosition,summarizePositionFlow} from '../
 import {screenAvailabilityForecast} from '../lib/workspace/nba-availability-feedback.mjs';
 import {POST} from '../app/api/[...path]/route.js';
 import {proxyBackend} from '../lib/workspace/proxy.mjs';
+import {WORKSPACE_CATEGORIES} from '../lib/workspace/catalog.mjs';
 
 const date=now=>new Date(now).toISOString();
 test('a missing research packet is distinct from a mismatched contract',()=>{
@@ -66,7 +67,7 @@ test('SELL requires a released interval below bids and filters recommendations b
   assert.equal(result.action,'SELL');
   assert.ok(result.evaluation.hold_vs_exit_range[1]<0);
   assert.deepEqual(result.alternatives.map(row=>row.ticker),['IDEA-1','IDEA-2','IDEA-3']);
-  assert.equal(result.alternative_coverage.category_count,8);
+  assert.equal(result.alternative_coverage.category_count,WORKSPACE_CATEGORIES.length);
   assert.deepEqual(result.alternative_coverage.checked_categories,['macro','sports']);
 });
 

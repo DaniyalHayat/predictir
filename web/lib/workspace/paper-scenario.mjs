@@ -3,6 +3,14 @@ import {usableForecast} from './positions.mjs';
 
 const wholeContractPayout=1;
 
+export function binaryBreakEvenExplanation(row){
+  if(!row||!['YES','NO'].includes(row.side)||row.partial_payout||!Number.isFinite(row.cost)||row.cost<=0||
+    !Number.isFinite(row.contracts)||row.contracts<=0||row.cost>row.contracts)return '';
+  const threshold=row.cost/row.contracts;
+  const yesThreshold=(100*(row.side==='YES'?threshold:1-threshold)).toFixed(2)+'%';
+  return `Divide the all-in cost by the ${row.contracts} contracts. At this fill, ${row.side} has positive modeled expected value only if P(YES) is ${row.side==='YES'?'above':'below'} ${yesThreshold}, before any uncertainty buffer.`;
+}
+
 export function paperScenarios(market,book,research,{budget=20,coefficient=.07,now=Date.now()}={}){
   if(!['active','open'].includes(market.status)||!(Date.parse(market.close_time)>now))return [];
   const forecast=usableForecast(research,now,market.ticker);
