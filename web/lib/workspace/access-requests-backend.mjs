@@ -9,11 +9,29 @@ const HASH = /^[a-f0-9]{64}$/;
 const UUID = /^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/;
 const DAY = 86400;
 const MAX_SUBSCRIPTIONS = 4;
-const message = JSON.stringify({
-  title: 'Predictir access request',
-  body: 'Someone requested access. Open Predictir to review.',
-  url: '/access/manage',
-});
+
+function ownerPageOrigin(value) {
+  try {
+    const origin = new URL(value);
+    if (origin.protocol === 'https:' && !origin.username && !origin.password) return origin.origin;
+  } catch {}
+  return 'https://predictir.dev';
+}
+
+function requestNotification(origin, requestId) {
+  const review = new URL('/access/manage', origin);
+  review.searchParams.set('request', requestId);
+  return JSON.stringify({
+    web_push: 8030,
+    notification: {
+      title: 'New Predictir access request',
+      body: 'Tap to review. Approve or decline with a tap.',
+      navigate: review.href,
+      tag: 'predictir-access-' + requestId,
+      data: {requestId},
+    },
+  });
+}
 
 function fail(status, message, retryAfter) {
   throw Object.assign(new Error(message), {status, retryAfter});
@@ -101,6 +119,7 @@ export async function scrubExpiredAccessRequests(storage) {
 export function createAccessRequestsBackend({edgeSecret, env = process.env, now = Date.now,
   fetcher = fetch, log = () => {}} = {}) {
   const vapid = vapidOptions(env);
+  const ownerOrigin = ownerPageOrigin(env.APP_ORIGIN);
 
   async function subscriptions(storage) {
     return activeSubscriptions((await storage.get(PUSH, 'subscriptions'))?.subscriptions, now());
@@ -118,7 +137,7 @@ export function createAccessRequestsBackend({edgeSecret, env = process.env, now 
     });
   }
 
-  async function sendNotice(storage, day) {
+  async function sendNotice(storage, day, requestId) {
     const started = performance.now();
     const report = (event, status, result) =>
       log('access.' + event, {status, result, duration_ms: Math.round(performance.now() - started)}, {sample: false});
@@ -128,10 +147,11 @@ export function createAccessRequestsBackend({edgeSecret, env = process.env, now 
       if (!targets.length) return report('push_skipped', 200, 'no_device');
       if (!await storage.consume('access-push#' + day, 24, 1, 2 * DAY))
         return report('push_skipped', 200, 'daily_limit');
+      const message = requestNotification(ownerOrigin, requestId);
       const results = await Promise.allSettled(targets.map(async target => {
         subscriptionEndpoint(target.endpoint);
         const outbound = generateRequestDetails(target, message, {
-          vapidDetails: vapid, TTL: 600, urgency: 'high', topic: 'predictir-access',
+          vapidDetails: vapid, TTL: 600, urgency: 'high', topic: requestId.replaceAll('-', ''),
         });
         const response = await fetcher(outbound.endpoint, {
           method: 'POST', headers: outbound.headers, body: outbound.body, redirect: 'error',
@@ -195,10 +215,11 @@ export function createAccessRequestsBackend({edgeSecret, env = process.env, now 
     ]) {
       if (!await storage.consume(key, limit, 1, ttl)) fail(429, 'Too many access requests. Try again later.', retry);
     }
+    const id = randomUUID();
     const inserted = await storage.db.query(`INSERT INTO market_lab.records(pk,sk,payload,expires_at)
       VALUES($1,$2,$3::jsonb,clock_timestamp()+interval '7 days') ON CONFLICT DO NOTHING RETURNING sk`,
-      [REQUESTS, receiptHash, JSON.stringify({id: randomUUID(), state: 'pending', ...details})]);
-    if (inserted.rowCount) await sendNotice(storage, day);
+      [REQUESTS, receiptHash, JSON.stringify({id, state: 'pending', ...details})]);
+    if (inserted.rowCount) await sendNotice(storage, day, id);
     return {status: inserted.rowCount ? 'pending' : liveState((await findRequest(storage, receiptHash))?.state)};
   }
 

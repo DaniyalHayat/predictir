@@ -3,7 +3,7 @@ import {NextResponse} from 'next/server';
 import type {NextRequest} from 'next/server';
 import {contentSecurityPolicy} from './lib/security-policy.mjs';
 import {accessChallengeConfig} from './lib/workspace/access-challenge.mjs';
-import {shareAccessEnabled,shareAccessKind,privateAccessAllowed,publicAccessPath,PRIVATE_HEADERS} from './lib/private-access.mjs';
+import {shareAccessEnabled,shareAccessKind,privateAccessAllowed,publicAccessPath,renewApprovedShareCookie,PRIVATE_HEADERS} from './lib/private-access.mjs';
 
 export function proxy(request:NextRequest){
   const nonce=randomBytes(18).toString('base64');
@@ -17,7 +17,13 @@ export function proxy(request:NextRequest){
     response=request.nextUrl.pathname.startsWith('/api/')||request.nextUrl.pathname.startsWith('/_next/data/')
       ?NextResponse.json({error:'A private Predictir link is required.'},{status:401})
       :NextResponse.redirect(new URL('/access',request.url));
-  }else response=NextResponse.next({request:{headers:requestHeaders}});
+  }else{
+    response=NextResponse.next({request:{headers:requestHeaders}});
+    if(request.method==='GET'&&(request.nextUrl.pathname==='/'||request.nextUrl.pathname==='/api/session')){
+      const renewed=renewApprovedShareCookie(request.headers.get('cookie'));
+      if(renewed)response.headers.append('Set-Cookie',renewed);
+    }
+  }
   if(shareAccessEnabled())for(const [name,value]of Object.entries(PRIVATE_HEADERS))response.headers.set(name,value);
   response.headers.set('Content-Security-Policy',policy);
   response.headers.set('Cache-Control','private, no-store');

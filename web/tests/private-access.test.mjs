@@ -2,7 +2,9 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {createHash,randomBytes} from 'node:crypto';
 import {SHARE_COOKIE,SHARE_COOKIE_SECONDS,CANARY_COOKIE,CANARY_COOKIE_SECONDS,redeemShareAccess,logoutShareAccess,
-  shareCookieAuthorized,shareAccessKind,privateAccessResponse,publicAccessPath} from '../lib/private-access.mjs';
+  shareCookieAuthorized,shareAccessKind,privateAccessResponse,publicAccessPath,issueApprovedShareCookie,
+  renewApprovedShareCookie,shareHeaderForBackend} from '../lib/private-access.mjs';
+import {BROWSER_IDLE_SECONDS,BROWSER_MAX_SECONDS} from '../lib/browser-session.mjs';
 import {proxyBackend} from '../lib/workspace/proxy.mjs';
 import {assistantResponse} from '../lib/workspace/assistant.mjs';
 import {assistantContext} from '../lib/workspace/assistant-context.mjs';
@@ -36,6 +38,51 @@ test('tampering, duplicate cookies, expiry, verifier rotation and signing-key ro
   assert.equal(shareCookieAuthorized(value,{...env,PREDICTIR_SHARE_TOKEN_HASH:'a'.repeat(64)},now),false);
   assert.equal(shareCookieAuthorized(value,{...env,MARKET_EDGE_SECRET:'replacement-fixture-key-'.repeat(3)},now),false);
   assert.equal(privateAccessResponse(new Request('https://predictir.dev/api/session'),env,now).status,401);
+});
+
+test('approved browsers renew across visits without reviving expired or rotated credentials',async()=>{
+  const day=86400*1000;
+  const pair=value=>value.split(';',1)[0];
+  const approved=pair(issueApprovedShareCookie(env,now,now/1000+SHARE_COOKIE_SECONDS,hash('approval')));
+  const shortInvite=await cookie();
+  assert.equal(renewApprovedShareCookie(shortInvite,env,now),null);
+  assert.equal(renewApprovedShareCookie(approved,env,now+1000),null);
+  assert.equal(renewApprovedShareCookie(approved,env,now+BROWSER_IDLE_SECONDS*1000),null);
+  assert.equal(renewApprovedShareCookie(approved,{...env,PREDICTIR_SHARE_TOKEN_HASH:hash('rotated')},now+day),null);
+  assert.equal(renewApprovedShareCookie(approved,{...env,MARKET_EDGE_SECRET:'different-test-signing-secret-'.repeat(3)},now+day),null);
+  let active=approved;
+  for(const days of [20,40,60,80,100,120,140,160])active=pair(renewApprovedShareCookie(active,env,now+days*day));
+  assert.equal(shareAccessKind(active,env,now+BROWSER_MAX_SECONDS*1000-1000),'share');
+  assert.equal(shareAccessKind(active,env,now+BROWSER_MAX_SECONDS*1000),null);
+  assert.equal(shareAccessKind(approved+'; '+approved,env,now),null);
+});
+
+test('the frontend sends a short approved credential to backend guards and preserves other cookies',()=>{
+  const approved=issueApprovedShareCookie(env,now,now/1000+SHARE_COOKIE_SECONDS,hash('approval')).split(';',1)[0];
+  const header=approved+'; __Host-market_guest=fixture; __Host-market_owner=fixture';
+  const forwarded=shareHeaderForBackend(header,env,now+86400*1000);
+  assert.match(forwarded,/; __Host-market_guest=fixture; __Host-market_owner=fixture$/);
+  assert.notEqual(forwarded,header);
+  const payload=JSON.parse(Buffer.from(forwarded.split(';',1)[0].slice(SHARE_COOKIE.length+1).split('.')[0],'base64url'));
+  assert.equal(payload.v,1);
+  assert.equal(shareAccessKind(forwarded,env,now+86400*1000),'share');
+  assert.equal(shareAccessKind(forwarded,env,now+2*86400*1000),null);
+});
+
+test('approved browsers keep access when opening an invite and a late renewal cannot reverse sign-out',async()=>{
+  const pair=value=>value.split(';',1)[0];
+  const approved=pair(issueApprovedShareCookie(env,now,now/1000+SHARE_COOKIE_SECONDS,hash('approval')));
+  const invite=await redeemShareAccess(request(token,{headers:{Cookie:approved}}),{env,now});
+  assert.equal(invite.status,204);
+  assert.deepEqual(invite.headers.getSetCookie(),[]);
+  const later=now+86400*1000;
+  const renewed=pair(renewApprovedShareCookie(approved,env,later));
+  const logout=await logoutShareAccess(new Request('https://predictir.dev/api/access/logout',{method:'POST',
+    headers:{Origin:'https://predictir.dev',Cookie:approved}}),{env,now:later});
+  const marker=pair(logout.headers.getSetCookie()[1]);
+  assert.equal(shareAccessKind(renewed+'; '+marker,env,later),null);
+  const different=pair(issueApprovedShareCookie(env,now,now/1000+SHARE_COOKIE_SECONDS,hash('another-browser')));
+  assert.equal(shareAccessKind(different+'; '+marker,env,later),'share');
 });
 
 test('missing configuration fails closed and redemption rejects CSRF, query-token delivery and oversized bodies',async()=>{
@@ -93,6 +140,30 @@ test('frontend API and assistant access checks run before upstream requests or m
   const allowed=await proxyBackend(new Request('https://predictir.dev/api/workspace/catalog',{headers:{Cookie:value+'; owner_cookie=private'}}),['workspace','catalog'],{
     fetcher:async(_url,options)=>{calls++;assert.equal(new Headers(options.headers).get('cookie'),value);return Response.json({ok:true});}});
   assert.equal(allowed.status,200);assert.equal(calls,1);
+});
+
+test('approved browser sessions are forwarded correctly to private session and stream routes',async t=>{
+  environment(t);
+  const approved=issueApprovedShareCookie(env,now,now/1000+SHARE_COOKIE_SECONDS,hash('route-approval')).split(';',1)[0];
+  const supplied=approved+'; __Host-market_guest=private-guest; __Host-market_owner=private-owner';
+  let downstream=0;
+  for(const route of ['session','stream','portfolio/stream']){
+    const response=await proxyBackend(new Request('https://predictir.dev/api/'+route,{headers:{Cookie:supplied}}),route.split('/'),{
+      fetcher:async(_url,options)=>{
+        downstream++;
+        const forwarded=new Headers(options.headers).get('cookie');
+        assert.equal(shareAccessKind(forwarded,env,now),'share');
+        assert.notEqual(forwarded.split(';',1)[0],approved);
+        assert.equal(forwarded.includes('__Host-market_guest=private-guest'),route==='session');
+        assert.equal(forwarded.includes('__Host-market_owner=private-owner'),route==='session');
+        return route==='session'?Response.json({kind:'owner'}):
+          new Response('data: test\n\n',{headers:{'Content-Type':'text/event-stream'}});
+      }
+    });
+    assert.equal(response.status,200,route);
+    await response.body?.cancel();
+  }
+  assert.equal(downstream,3);
 });
 
 test('backend direct entry, API and forged edge claims are blocked while readiness and authenticated forwarding work',async t=>{
