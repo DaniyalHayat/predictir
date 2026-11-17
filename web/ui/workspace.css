@@ -181,8 +181,14 @@ button,input,textarea,select{font:inherit}button,a,input,textarea{outline-offset
     min-block-size: 44px;
   }
 
-  body:has(.private-session-controls) .workspace .list-footer {
-    padding-inline-end: min(36vw, 122px);
+  .workspace .workspace-header > div:first-child {
+    min-inline-size: 0;
+  }
+
+  .workspace .workspace-header strong {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 }
 

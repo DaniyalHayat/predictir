@@ -1,17 +1,47 @@
-.private-session-controls{position:fixed;right:16px;bottom:14px;z-index:45;display:flex;align-items:center;gap:10px;max-width:calc(100vw - 32px)}.private-session-controls button{min-height:36px;border:1px solid var(--line);border-radius:6px;background:var(--panel);color:var(--muted);padding:7px 11px;font-size:11px;box-shadow:0 2px 12px #0002}.private-session-controls button:hover{color:var(--ink)}.private-session-controls span{font-size:12px;background:var(--panel);color:var(--ink);padding:7px;border:1px solid var(--line);border-radius:5px}@media(max-width:760px){.private-session-controls{right:10px;bottom:10px}.private-session-controls button{min-height:40px}}
-[data-preview-revalidating] body { visibility: hidden; }
+[data-preview-revalidating] body {
+  visibility: hidden;
+}
 
-.private-session-controls .workspace-lock {
+.private-session-controls {
+  position: relative;
+  flex: none;
+}
+
+.workspace-lock {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-height: 38px;
+  padding: 7px 11px;
+  border: 1px solid var(--line);
   border-radius: 11px;
+  color: var(--ink);
   background: var(--surface-raised, var(--panel));
+  font-size: .875rem;
+}
+
+.private-session-controls [role=alert] {
+  position: absolute;
+  z-index: 45;
+  inset: calc(100% + 8px) 0 auto auto;
+  width: min(220px, 64vw);
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 11px;
+  color: var(--ink);
+  background: var(--panel);
+  font-size: .875rem;
 }
 
 @media (max-width: 760px) {
-  .private-session-controls {
-    bottom: max(8px, env(safe-area-inset-bottom, 0px));
+  .workspace-lock {
+    width: 44px;
+    min-height: 44px;
+    padding: 0;
   }
 
-  .private-session-controls .workspace-lock {
-    min-height: 44px;
+  .workspace-lock > span {
+    display: none;
   }
 }

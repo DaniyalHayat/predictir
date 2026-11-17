@@ -38,7 +38,7 @@ function ScoreReplay({game}) {
   </>;
 }
 
-export default function ReplayWorkspace() {
+export default function ReplayWorkspace({privateControls=<></>}={}) {
   const [catalog, setCatalog] = useState(null);
   const [selected, setSelected] = useState(null);
   const [error, setError] = useState('');
@@ -58,7 +58,7 @@ export default function ReplayWorkspace() {
   const game = catalog?.games.find(row => row.id === selected);
   return <main className="azure-replay" data-theme="midnight">
     <a href="#replay-content" className="skip-link">Skip to replay</a>
-    <header><strong>Predictir</strong><span className="tag">Azure replay</span><a href="https://predictir.dev/">Live Market Lab ↗</a></header>
+    <header><strong>Predictir</strong><span className="tag">Azure replay</span><a href="https://predictir.dev/">Live Market Lab ↗</a>{privateControls}</header>
     <div className="replay-content" id="replay-content">
       <span className="eyebrow">Historical score replay</span><h1>Replay a market scenario</h1>
       <p>Compare the pregame estimate with an observed quarter score. Test the research components on the same inputs without using a live exchange or social feed.</p>

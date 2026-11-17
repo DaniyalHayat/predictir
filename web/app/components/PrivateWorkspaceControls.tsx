@@ -1,5 +1,6 @@
 'use client';
 import {useEffect,useState} from 'react';
+import {LockKeyhole} from 'lucide-react';
 import {readPreviewSession} from '../../ui/preview-session.mjs';
 import './private-session.css';
 
@@ -37,5 +38,6 @@ export default function PrivateWorkspaceControls() {
       window.location.replace('/access');
     }catch{setError('Could not lock the workspace. Try again.');setBusy(false);}
   }
-  return <div className="private-session-controls workspace-lock-wrap"><button className="workspace-lock" type="button" onClick={lock} disabled={busy} title="Reopen the preview to return">{busy?'Locking…':'Lock workspace'}</button>{error&&<span role="alert">{error}</span>}</div>;
+  return <div className="private-session-controls"><button className="workspace-lock" type="button" onClick={lock} disabled={busy} aria-label="Lock workspace" title="Lock workspace">
+    <LockKeyhole size={16} aria-hidden="true"/><span>{busy?'Locking…':'Lock'}</span></button>{error&&<span role="alert">{error}</span>}</div>;
 }
