@@ -222,18 +222,24 @@ export default function App({paperWorkspace=false}={}) {
   const activeView=useRef(view);activeView.current=view;
   const closed=Boolean(selection.market&&(['closed','settled','finalized'].includes(selection.market.status)||Date.parse(selection.market.close_time)<=clock));
   const researchLoading=selection.provisional||researchPending;
+  const cancelLookup=useCallback(()=>{
+    if(!lookupRequest.current)return;
+    lookupRequest.current.abort();
+    lookupRequest.current=null;
+    setListLoading(false);
+  },[]);
   const select=useCallback((market,{openDetail=true,provisional=false,fromHistory=false}={})=>{if(!fromHistory)listIntent.current++;dispatch({type:'select',market,provisional});setAssistant(false);setHistory(null);setTab('overview');setStreamStatus('Loading quote');setPaused(false);setMobileDetail(openDetail);},[]);
   const openMarket=useCallback(market=>{restoringMarket.current?.abort();recordMarketLocation(market.ticker);setView('markets');setPaperPreset(null);select(market);},[select]);
   const selectResearch=useCallback(market=>{openMarket(market);setTab('research');},[openMarket]);
-  function showMarkets(){restoringMarket.current?.abort();recordMarketLocation('');setMobileDetail(false);}
-  function changeCategory(id){showMarkets();if(view==='portfolio'||id==='discover')setView('markets');if(id===category)return;lookupRequest.current?.abort();listIntent.current++;dispatch({type:'clear'});setHistory(null);setCoverage(null);setResearchLoading(false);setAssistant(false);setPaperPreset(null);setMarkets([]);setQuery('');setRowLimit(marketPageSize);setCategory(id);}
+  function showMarkets(){restoringMarket.current?.abort();cancelLookup();recordMarketLocation('');setMobileDetail(false);}
+  function changeCategory(id){showMarkets();if(view==='portfolio'||id==='discover')setView('markets');if(id===category)return;listIntent.current++;dispatch({type:'clear'});setHistory(null);setCoverage(null);setResearchLoading(false);setAssistant(false);setPaperPreset(null);setMarkets([]);setQuery('');setRowLimit(marketPageSize);setCategory(id);}
   function updatePreferences(value){const next=appearance(value);if(next.model!==preferences.model)setAssistant(false);setPreferences(next);try{localStorage.setItem(PREFERENCE_KEY,JSON.stringify(next));setPreferenceError(false);}catch{setPreferenceError(true);}}
   useEffect(()=>{try{migratePredictirStorage(localStorage);setPreferences(appearance(localStorage.getItem(PREFERENCE_KEY)));}catch{setPreferenceError(true);}},[]);
   useEffect(()=>{document.documentElement.dataset.theme=preferences.theme;},[preferences.theme]);
   useEffect(()=>{
     async function restore(){
       restoringMarket.current?.abort();
-      lookupRequest.current?.abort();
+      cancelLookup();
       const ticker=locationMarket();
       if(!ticker){setMobileDetail(false);return;}
       setView('markets');setPaperPreset(null);setNavigationError('');
@@ -253,7 +259,7 @@ export default function App({paperWorkspace=false}={}) {
     void restore();
     window.addEventListener('popstate',restore);
     return ()=>{restoringMarket.current?.abort();window.removeEventListener('popstate',restore);};
-  },[select]);
+  },[select,cancelLookup]);
   useEffect(()=>{const id=setInterval(()=>{if(!document.hidden&&activeView.current!=='ranked')setClock(Date.now());},1000);const key=e=>{if(e.key==='Escape'){setAssistant(false);setJournal(false);setSources(false);setAppearanceOpen(false);setArchiveOpen(false);}if(e.key==='/'&&!['INPUT','TEXTAREA'].includes(document.activeElement?.tagName)&&!document.querySelector('.overlay,.assistant-panel')){e.preventDefault();setView('markets');setMobileDetail(false);requestAnimationFrame(()=>search.current?.focus());}};document.addEventListener('keydown',key);return()=>{clearInterval(id);document.removeEventListener('keydown',key);lookupRequest.current?.abort();};},[]);
   useEffect(()=>{
     const controller=new AbortController(),intent=listIntent.current,keepSelection=Boolean(locationMarket()||selection.ticker&&listLabel!=='Opened from link');
@@ -325,7 +331,7 @@ export default function App({paperWorkspace=false}={}) {
     setListLoading(true);setListError('');dispatch({type:'clear'});setHistory(null);
     try{const value=await api('/api/resolve?q='+encodeURIComponent(query.trim()),{signal:controller.signal});if(controller.signal.aborted||intent!==listIntent.current)return;
       setMarkets(value.contracts);setListLabel('Opened from link');setCoverage(null);if(value.contracts.length)openMarket(value.contracts[0]);else setListError('No matching open contracts were returned.');
-    }catch(e){if(e.name!=='AbortError'&&intent===listIntent.current)setListError(e.message);}finally{if(!controller.signal.aborted&&lookupRequest.current===controller)setListLoading(false);}}
+    }catch(e){if(e.name!=='AbortError'&&intent===listIntent.current)setListError(e.message);}finally{if(lookupRequest.current===controller){lookupRequest.current=null;setListLoading(false);}}}
   const filtered=useMemo(()=>{const q=query.toLowerCase().trim();if(!q||/^https:\/\//.test(q))return markets;return markets.filter(m=>[contractTitle(m),m.ticker,m.event_ticker].some(text=>text?.toLowerCase().includes(q)));},[markets,query]);
   const displayed=useMemo(()=>filtered.slice(0,rowLimit),[filtered,rowLimit]);
   const opinions=useOpinions(listRoot,displayed,preferences.model,view==='markets'&&Boolean(selection.book||selection.research));

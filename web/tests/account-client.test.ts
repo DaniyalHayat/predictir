@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {loadAccountSession,accountSnapshot,resolveAccountConflict,assertPaperSession} from '../ui/useAccount.jsx';
+import {loadAccountSession,accountSnapshot,resolveAccountConflict,assertPaperSession,toggleSavedMarket} from '../ui/useAccount.jsx';
 import {PAPER_STORAGE,initializePaperAccount} from '../ui/paper-state.mjs';
 import {ACTIVE_ACCOUNT,accountCacheKey} from '../ui/guest-session.mjs';
 import {readVerifiedPaperLedger} from '../ui/paper-session.mjs';
@@ -71,4 +71,35 @@ test('an owner identity outage cannot initialize or switch to a guest paper acco
   assert.equal(await loadAccountSession(true),null);
   assert.throws(()=>readVerifiedPaperLedger({engine:(globalThis as any).PredictirPaper,storage:localStorage,assertSession:assertPaperSession}),/loading/);
   assert.equal(memory.get(ACTIVE_ACCOUNT),'owner:'+owner.owner.email);assert.equal(memory.get(PAPER_STORAGE),retained);
+});
+
+test('a stale browser does not restore a contract removed from the account',async()=>{
+  memory.clear();
+  const active='owner:'+owner.owner.email,retained=ledger(),watchlist=['KXTEST-REMOVED','KXTEST-KEEP'];
+  memory.set(ACTIVE_ACCOUNT,active);
+  memory.set(PAPER_STORAGE,JSON.stringify(retained));
+  memory.set(accountCacheKey('owner-meta:'+owner.owner.email),JSON.stringify({
+    revision:1,synced:JSON.stringify(retained),watchlist,syncedWatchlist:watchlist,
+  }));
+  globalThis.fetch=async(input)=>json(String(input).endsWith('/api/session')?owner:{ledger:retained,watchlist:['KXTEST-KEEP'],revision:2});
+  await loadAccountSession(true);
+  assert.deepEqual(accountSnapshot().watchlist,['KXTEST-KEEP']);
+  assert.equal(accountSnapshot().sync,'Saved to your account');
+});
+
+test('a malformed guest result leaves the previous browser account intact',async()=>{
+  memory.set(ACTIVE_ACCOUNT,'owner:'+owner.owner.email);
+  globalThis.fetch=async()=>json({kind:'guest'});
+  assert.equal(await loadAccountSession(true),null);
+  assert.equal(memory.get(ACTIVE_ACCOUNT),'owner:'+owner.owner.email);
+});
+
+test('a guest can save and remove an exact non-KX contract identity',async()=>{
+  memory.clear();
+  globalThis.fetch=async()=>json(guest);
+  await loadAccountSession(true);
+  toggleSavedMarket('SERIES-EXACT.1');
+  assert.deepEqual(accountSnapshot().watchlist,['SERIES-EXACT.1']);
+  toggleSavedMarket('SERIES-EXACT.1');
+  assert.deepEqual(accountSnapshot().watchlist,[]);
 });
