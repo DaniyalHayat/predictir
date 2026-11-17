@@ -62,3 +62,18 @@ test('assistant explains a priced setup and links attributed evidence without an
   assert.match(response,/\[Match report\]\(https:\/\/www\.nfl\.com\/\)/);
   assert.doesNotMatch(response,/chance to win|independent model/);
 });
+
+test('Ask Why preserves the impeachment trigger and shows both break-even calculations despite live prices',()=>{
+  const ticker='KXIMPEACH-29-JAN20';
+  const quote_as_of=new Date(now).toISOString();
+  const answer=explainContract({ticker,title:'Impeachment during the term',as_of:quote_as_of,
+    opinion:{side:'PASS',reason:'No validated forecast covers this outcome.'},
+    rules:{primary:'The House passes an impeachment resolution.',secondary:'The President must still be in office.'},
+    paper_scenarios:[{ticker,side:'YES',contracts:29,cost:19.88,break_even:19.88/29,quote_as_of},
+      {ticker,side:'NO',contracts:56,cost:19.92,break_even:19.92/56,quote_as_of}]
+  },ticker,now,true);
+  assert.match(answer,/PASS\. Supported allocation: 0 contracts/);
+  assert.match(answer,/House passes an impeachment resolution\. The President must still be in office/);
+  assert.match(answer,/P\(YES\) is above 68\.55%/);
+  assert.match(answer,/P\(YES\) is below 64\.43%/);
+});

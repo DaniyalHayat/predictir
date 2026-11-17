@@ -13,6 +13,7 @@ import {azureAccess} from './azure-access.mjs';
 import {azureBackendOrigin,azureMode,azureOrigin} from './azure-mode.mjs';
 import {assistantPanels,azureResearchAnswer,azureResearchPacket,azureToolArguments,planResearchReadback} from './azure-research.mjs';
 import {assistantContext} from './assistant-context.mjs';
+import {binaryBreakEvenExplanation} from './paper-scenario.mjs';
 const MODEL='google/gemini-2.5-flash-lite';
 const sourceLinks=sources=>'Sources checked: '+sources.map(({url,label})=>'['+(String(label||new URL(url).hostname).replace(/[\[\]\r\n]/g,' ').slice(0,100))+']('+url.replaceAll('(','%28').replaceAll(')','%29')+')').join(', ');
 const money=value=>new Intl.NumberFormat('en-US',{style:'currency',currency:'USD'}).format(value);
@@ -51,6 +52,10 @@ export function explainContract(packet,ticker,now=Date.now(),full=false){
   if(current&&['YES','NO','PASS'].includes(opinion?.side)){
     lines.push('Research screen: '+opinion.side+'. '+(opinion.side==='PASS'?'Supported allocation: 0 contracts. ':'')+(opinion.reason||''));
   }
+  const impeachment=ticker.startsWith('KXIMPEACH-');
+  if(impeachment&&packet.rules?.primary){
+    lines.push('Settlement rule: '+packet.rules.primary+(packet.rules.secondary?' '+packet.rules.secondary:''));
+  }
   if(fresh&&Number.isFinite(forecast.probability)){
     lines.push(forecast.outcomes?
       `The team-strength model gives the YES team a ${pct(forecast.probability)} chance to win. A tie has ${pct(forecast.outcomes.tie)} modeled probability and pays 50¢, so a YES contract is worth ${price(forecast.expected_settlement_value)} on average under this model.`:
@@ -64,7 +69,7 @@ export function explainContract(packet,ticker,now=Date.now(),full=false){
     lines.push('The $20 paper comparison',...rows.map(row=>
       `${row.side} would take ${row.contracts} contracts at ${price(row.break_even)} each, fees included. ${Number.isFinite(row.expected_profit)&&current&&fresh?
         'At the model’s point estimate, the expected paper P/L is '+money(row.expected_profit)+'.':
-        'A thesis needs a settlement value above that entry price to make the trade worthwhile.'}`));
+        (impeachment&&binaryBreakEvenExplanation(row))||'A thesis needs a settlement value above that entry price to make the trade worthwhile.'}`));
   }
   const signal=packet.market_signal;
   if(signal?.status==='available'&&now-Date.parse(signal.observed_at)<180000){
@@ -82,7 +87,7 @@ export function explainContract(packet,ticker,now=Date.now(),full=false){
         (row.excerpt?' — '+row.excerpt:'')+(full&&row.why_relevant?' '+row.why_relevant:'')+(full&&row.impact?' '+row.impact:''));
     }catch{}
   }
-  if(!rows.length&&packet.rules?.primary)lines.push('Settlement rule: '+packet.rules.primary);
+  if(!impeachment&&!rows.length&&packet.rules?.primary)lines.push('Settlement rule: '+packet.rules.primary);
   if(lines.length===1)lines.push('The current source check did not return usable depth or outcome data. Open the Rules tab to check the settlement trigger.');
   if(!full)return lines.join('\n\n');
   const sections=[lines[0],'## The short answer',...lines.slice(1)];
@@ -97,7 +102,8 @@ export function explainContract(packet,ticker,now=Date.now(),full=false){
   }
   if(fresh&&Number.isFinite(forecast.probability))sections.push('## Check the numbers',explainResearchMath(packet,ticker,now));
   const drivers=(packet.drivers||[]).filter(row=>row.name&&row.detail).slice(0,5);
-  if(drivers.length)sections.push('## What drives the estimate',...drivers.map(row=>row.name+'. '+row.detail));
+  if(drivers.length)sections.push(impeachment?'## How to verify the decision':'## What drives the estimate',
+    ...drivers.map(row=>row.name+(impeachment?' ':'. ')+row.detail));
   const context=packet.model_context;
   if(context?.reason)sections.push('## How reporting fits the model',context.reason);
   const changes=[forecast?.reason,forecast?.release_reason,forecast?.validation?.reason,...(forecast?.warnings||[]).slice(0,3)].filter(Boolean);
@@ -107,6 +113,7 @@ export function explainContract(packet,ticker,now=Date.now(),full=false){
 export function explainResearchMath(packet,ticker,now=Date.now()){
   if(packet?.ticker!==ticker)return 'The matching research packet is unavailable. Refresh the selected contract before using its figures.';
   const f=packet.forecast,source=Date.parse(f?.source_as_of||''),checked=Date.parse(packet.as_of||''),maximum=Number.isFinite(f?.max_source_age_seconds)?Math.min(86400,Math.max(10,f.max_source_age_seconds)):86400;
+  if(ticker.startsWith('KXIMPEACH-')&&!Number.isFinite(f?.probability)&&f?.reason)return f.reason;
   if(!Number.isFinite(f?.probability)||f.probability<0||f.probability>1||!Array.isArray(f.interval)||f.interval.length!==2||!f.interval.every(Number.isFinite)||f.interval[0]<0||f.interval[0]>f.probability||f.interval[1]<f.probability||f.interval[1]>1||!Number.isFinite(source)||source>now+5000||now-source>maximum*1000||!Number.isFinite(checked)||checked>now+5000||now-checked>90000)
     return 'A fresh independent probability range is unavailable for this contract. The current source check must complete before its figures can be explained.';
   const pct=p=>(p*100).toFixed(1)+'%',usd=n=>'$'+n.toFixed(2),quantity=n=>new Intl.NumberFormat('en-US',{maximumFractionDigits:2}).format(n);

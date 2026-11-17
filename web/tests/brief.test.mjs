@@ -38,6 +38,19 @@ test('unsupported exact series remains evidence-only despite a name resembling a
   assert.equal(result.forecast.probability, null); assert.equal(result.decision.side, 'insufficient_edge');
   assert.ok(result.drivers.length >= 3);
 });
+test('impeachment evidence requires the actual House vote and withholds a probability', async () => {
+  const ticker = 'KXIMPEACH-29-JAN20';
+  const result = await marketBrief(ticker, {}, dependencies({
+    marketDetails: async () => ({market: {...market, ticker, event_ticker: 'KXIMPEACH-29',
+      title: 'Will the President be impeached before Jan 20, 2029?', rules_primary: 'The House passes an impeachment resolution.'}}),
+    researchReport: async () => assert.fail('An unrelated model must not be used'),
+  }));
+  assert.equal(result.forecast.probability, null);
+  assert.equal(result.decision.side, 'insufficient_edge');
+  assert.equal(result.drivers[0].url, 'https://clerk.house.gov/Votes');
+  assert.match(result.drivers[0].detail, /tabling does not satisfy/);
+  assert.doesNotMatch(JSON.stringify(result.drivers), /polling|turnout/i);
+});
 test('bad validation, incomplete depth, stale book and expired market fail closed', async () => {
   for (const override of [
     { researchReport: async () => ({ markets: [{ ticker, probability: .99, interval: [.98, 1], source_as_of: new Date(NOW).toISOString(), validation: { n: 60, rmse_skill: -.1, interval_80_coverage: .9 } }] }) },

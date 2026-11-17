@@ -134,6 +134,27 @@ test('catalog samples reject unknown close/status and preserve partial-source co
   const value=await workspaceMarkets('sports',{maximumSeries:1,catalogGetter:async()=>({rows:[{ticker:'KXNBAGAME',category:'Sports',categories:[],volume:1}],errors:['one source unavailable']}),getter:async()=>({as_of:new Date().toISOString(),source_url:'https://external-api.kalshi.com/trade-api/v2/markets',data:{markets:[market,{...market,ticker:'BAD',close_time:null},{...market,ticker:'BAD2',status:'closed'}]}})});
   assert.equal(value.markets.length,1);assert.equal(value.partial,true);assert.equal(inferCategory({ticker:'UNKNOWN-X'}),'other');
 });
+test('Politics includes the term-long impeachment contract in a bounded catalog',async()=>{
+  const ticker='KXIMPEACH-29-JAN20';
+  const series=['KXIMPEACH','KXTRUMPREMOVE','KXTRUMPRESIGN'];
+  const rows=[...series,'KXOTHERPOLITICS'].map(ticker=>({ticker,category:'Politics',categories:[],volume:1}));
+  const requests=[];
+  const value=await workspaceMarkets('politics',{
+    catalogGetter:async category=>{assert.equal(category,'politics');return {rows};},
+    getter:async(path,params)=>{
+      assert.equal(path,'/markets');
+      assert.equal(params.status,'open');
+      assert.equal(params.limit,'25');
+      requests.push(params.series_ticker);
+      return {as_of:new Date().toISOString(),data:{markets:params.series_ticker==='KXIMPEACH'?
+        [{...market,ticker,event_ticker:'KXIMPEACH-29',title:'Will the President be impeached before Jan 20, 2029?'}]:[]}};
+    },
+  });
+  assert.deepEqual(requests,series);
+  assert.deepEqual(value.markets.map(row=>[row.ticker,row.category]),[[ticker,'politics']]);
+  assert.equal(inferCategory({ticker}),'politics');
+  assert.equal(inferCategory({ticker:'KXTRUMPRESIGN'}),'politics');
+});
 test('fast research does not call music or paid X, and assistant excludes Spotify requests',async()=>{
   let musicCalls=0,postCalls=0,musicOptions;
   const brief={ticker,as_of:new Date().toISOString(),market,forecast:{probability:null},decision:{side:'insufficient_edge',reasons:['No independent model']},sources:[],errors:[],summary:'Evidence only'};

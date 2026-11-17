@@ -160,7 +160,8 @@ export default function OwnerAccess(){
           </button>}
           <button onClick={()=>void signOut()}>Sign out</button>
         </div>
-        {publicKey&&pushState==='unavailable'&&<p>On iPhone or iPad, open this page from your Home Screen to enable alerts.</p>}
+        {publicKey&&pushState==='unavailable'&&<p>On iPhone or iPad, open this page in Safari, choose Share → Add to Home Screen, then open the Predictir icon to enable alerts.</p>}
+        {!publicKey&&<p>Push alerts are currently unavailable. Use this page to review requests.</p>}
         {requests.length===0?<p>No pending requests.</p>:<ul className={styles.list}>
           {requests.map(item=><li key={item.id}>
             <strong>{item.name}</strong><span>{item.email}</span>

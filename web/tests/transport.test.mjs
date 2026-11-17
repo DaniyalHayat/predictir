@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {createServer} from 'node:http';
 import {readJSON,fetchJSON} from '../lib/transport.mjs';
-import {initialSelection, selectionReducer, contractTitle} from '../ui/selection.ts';
+import {initialSelection, selectionReducer, contractTitle, contractExchangeURL} from '../ui/selection.ts';
 
 test('HTML success and proxy failure responses become a useful typed error', async () => {
   for (const status of [200, 502]) await assert.rejects(() => readJSON(new Response('<!doctype html><h1>Unavailable</h1>',
@@ -44,4 +44,13 @@ test('outcome names accompany shared event titles and stale quotes cannot replac
   const state = {...selectionReducer(initialSelection, {type:'select', market:{ticker:'A'}}), book:{ticker:'A', as_of:'2026-11-04T12:00:00Z'}};
   assert.equal(selectionReducer(state, {type:'book', ticker:'A', generation:state.generation,
     value:{ticker:'A', as_of:'2026-11-04T11:00:00Z'}}), state);
+});
+
+test('exchange links carry the selected event and contract', () => {
+  const ticker='KXIMPEACH-29-JAN20';
+  const contract=new URL(contractExchangeURL({ticker,event_ticker:'KXIMPEACH-29'}));
+  assert.equal(contract.origin,'https://kalshi.com');
+  assert.equal(contract.pathname,'/markets/kximpeach/-/kximpeach-29');
+  assert.equal(contract.searchParams.get('op_market_ticker'),ticker);
+  assert.equal(contractExchangeURL({ticker,event_ticker:'..'}),'https://kalshi.com/markets/kximpeach');
 });
