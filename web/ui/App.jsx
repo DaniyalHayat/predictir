@@ -266,7 +266,8 @@ export default function App({paperWorkspace=false,privateControls=<></>}={}) {
     setListLoading(true);setListError('');setListLabel(categories.find(c=>c[0]===category)[1]);
     api('/api/workspace/markets?category='+category,{signal:controller.signal,timeoutMs:20000}).then(value=>{
       if(controller.signal.aborted||intent!==listIntent.current)return;
-      setMarkets(value.markets);setCoverage(value);if(value.markets.length&&!keepSelection)select(value.markets[0],{openDetail:false,provisional:true});
+      setMarkets(value.markets);setCoverage(value);
+      if(value.markets.length&&!keepSelection&&!locationMarket())select(value.markets[0],{openDetail:false,provisional:true});
     }).catch(e=>{if(e.name!=='AbortError'&&!controller.signal.aborted)setListError(e.message);}).finally(()=>{if(!controller.signal.aborted)setListLoading(false);});
     return()=>controller.abort();
   },[category,listRevision]);
@@ -274,7 +275,7 @@ export default function App({paperWorkspace=false,privateControls=<></>}={}) {
     if(view!=='markets'||listLoading||listLabel==='Opened from link')return;
     const controller=new AbortController();let busy=false;
     const refresh=async()=>{if(document.hidden||busy)return;busy=true;const intent=listIntent.current;
-      try{const value=await api('/api/workspace/markets?category='+category,{signal:controller.signal,timeoutMs:20000});if(!controller.signal.aborted&&intent===listIntent.current){setMarkets(current=>refreshMarketRows(current,value.markets));setCoverage(value);setListError('');if(!selection.ticker&&value.markets.length)select(value.markets[0],{openDetail:false,provisional:true});}}
+      try{const value=await api('/api/workspace/markets?category='+category,{signal:controller.signal,timeoutMs:20000});if(!controller.signal.aborted&&intent===listIntent.current){setMarkets(current=>refreshMarketRows(current,value.markets));setCoverage(value);setListError('');if(!selection.ticker&&value.markets.length&&!locationMarket())select(value.markets[0],{openDetail:false,provisional:true});}}
       catch{}finally{busy=false;}};
     const timer=setInterval(refresh,coverage?.stale?8000:listError||isDiscovery?30000:60000);document.addEventListener('visibilitychange',refresh);
     return()=>{controller.abort();clearInterval(timer);document.removeEventListener('visibilitychange',refresh);};
