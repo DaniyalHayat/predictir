@@ -115,7 +115,12 @@ test('owner activity renews the same browser within a fixed ceiling and code cha
   assert.equal((await list(owner+'x',start)).status,401);
   assert.deepEqual((await list(owner,start+1000)).headers.getSetCookie(),[]);
   assert.equal((await list(owner,start+BROWSER_IDLE_SECONDS*1000)).status,401);
-  for(const days of [20,40,60,80,100,120,140,160,179]){
+  const decision=await call('manage',{action:'decide',id:'00000000-0000-4000-8000-000000000001',decision:'approved'},
+    {cookie:owner,options:{now:start+20*day,fetcher:async()=>Response.json({status:'approved'})}});
+  assert.equal(decision.status,200);
+  owner=cookiePair(decision.headers,name);
+  assert.ok(owner);
+  for(const days of [40,60,80,100,120,140,160,179]){
     const next=await list(owner,start+days*day);
     assert.equal(next.status,200);
     owner=cookiePair(next.headers,name)||owner;

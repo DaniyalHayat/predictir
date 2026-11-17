@@ -181,8 +181,8 @@ export async function handleAccessRequest(request,operation,{env=process.env,now
       data.action==='subscribe'&&data.subscription&&typeof data.subscription==='object'||
       data.action==='unsubscribe'&&typeof data.endpoint==='string'){
       const result=await backend(request,env,fetcher,data,regional);
-      if(result.status===204)return response(null,204);
-      return result.status===200?response(result.data):providerFailure(result);
+      if(result.status!==200&&result.status!==204)return providerFailure(result);
+      return response(result.status===204?null:result.data,result.status,renewedOwnerCookies(owner,env,nowSeconds));
     }
     return response({error:'Unknown access action.'},400);
   }catch(error){
