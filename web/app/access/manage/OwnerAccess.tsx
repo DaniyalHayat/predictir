@@ -66,7 +66,7 @@ export default function OwnerAccess({notificationOnly=false}:{notificationOnly?:
     try{
       const result=await post('',{action:'list',background});
       if(version!==refreshVersion.current)return;
-      if(result.status===401||result.status===404){lock();return;}
+      if(result.status===401||result.status===403||result.status===404){lock();return;}
       if(!result.ok)throw new Error();
       const data=await result.json();
       if(version!==refreshVersion.current)return;
@@ -203,6 +203,11 @@ export default function OwnerAccess({notificationOnly=false}:{notificationOnly?:
   function dismissNotice(id:string){
     dismissals.current.add(id);
     try{sessionStorage.setItem(dismissedKey,JSON.stringify([...dismissals.current].slice(-336)));}catch{}
+    const url=new URL(window.location.href);
+    if(!notificationOnly&&url.searchParams.get('request')===id){
+      url.searchParams.delete('request');
+      window.history.replaceState(window.history.state,'',url);
+    }
     confirmingNotice.current='';
     setNotice(current=>current?.request.id===id?null:current);
     showNotice(requests);
