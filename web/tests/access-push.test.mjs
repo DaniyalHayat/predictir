@@ -58,6 +58,19 @@ test('a banner click only opens or focuses the exact request in the signed-in ap
   assert.deepEqual(existing.opened, []);
 });
 
+test('receiving a push signals visible tabs without passing any request data', async () => {
+  const visible = [], hidden = [];
+  const browser = harness({clients: [
+    {visibilityState: 'visible', postMessage: value => visible.push(value)},
+    {visibilityState: 'hidden', postMessage: value => hidden.push(value)},
+  ]});
+  await browser.fire('push', {data: {json: () => ({notification: {data: {requestId}}})}});
+  assert.equal(browser.notices[0].title, 'Approval required');
+  assert.equal(JSON.stringify(visible), '[{"type":"predictir-access-pending"}]');
+  assert.deepEqual(hidden, []);
+  assert.deepEqual(browser.requests, []);
+});
+
 test('a supported notification action uses the owner session and opens review if it cannot save', async () => {
   const notification = {close() {}, data: {requestId}};
   const blocked = harness();

@@ -24,8 +24,8 @@ function requestNotification(origin, requestId) {
   return JSON.stringify({
     web_push: 8030,
     notification: {
-      title: 'New Predictir access request',
-      body: 'Tap to review. Approve or decline with a tap.',
+      title: 'Approval required',
+      body: 'A visitor requested access to Predictir. Tap to review.',
       navigate: review.href,
       tag: 'predictir-access-' + requestId,
       data: {requestId},

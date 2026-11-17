@@ -3,6 +3,8 @@ import Analytics from '../components/Analytics.jsx';
 import PrivateWorkspaceControls from '../components/PrivateWorkspaceControls';
 import {azureMode} from '../../lib/workspace/azure-mode.mjs';
 import {shareAccessEnabled,shareAccessKind} from '../../lib/private-access.mjs';
+import {hasAccessOwnerSession} from '../../lib/access-requests.mjs';
+import OwnerAccess from '../access/manage/OwnerAccess';
 import {headers} from 'next/headers';
 
 export default async function WorkspaceLayout({children}:{children:ReactNode}) {
@@ -12,6 +14,7 @@ export default async function WorkspaceLayout({children}:{children:ReactNode}) {
     {children}
     {edition==='live'&&<footer style={{background:'#0b0c0e',color:'#cbd0d8',fontSize:12,padding:'8px 20px'}}><a style={{color:'inherit'}} href="https://db-ip.com/">IP geolocation by DB-IP</a></footer>}
     {privateAccess&&shareAccessKind(requestHeaders.get('cookie'))&&<PrivateWorkspaceControls/>}
+    {hasAccessOwnerSession(requestHeaders)&&<OwnerAccess notificationOnly/>}
     {!edition&&!privateAccess&&<Analytics nonce={nonce}/>}
   </>;
 }

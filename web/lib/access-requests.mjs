@@ -57,6 +57,10 @@ function ownerSession(request,env,now){
   return {iat,exp,nonce};
 }
 
+export function hasAccessOwnerSession(headers,env=process.env,now=Date.now()){
+  return accessRequestsEnabled(env)&&Boolean(ownerSession({headers},env,Math.floor(now/1000)));
+}
+
 function ownerSessionSignature(env,value){
   return sign(env.MARKET_EDGE_SECRET,'predictir.access.owner.v2',value+'.'+env.PREDICTIR_ACCESS_OWNER_HASH);
 }
@@ -175,7 +179,7 @@ export async function handleAccessRequest(request,operation,{env=process.env,now
       const result=await backend(request,env,fetcher,{action:'list'},regional);
       if(result.status!==200||!Array.isArray(result.data?.requests))return providerFailure(result);
       return response({requests:result.data.requests,vapidPublicKey:env.PREDICTIR_ACCESS_VAPID_PUBLIC_KEY||null},
-        200,renewedOwnerCookies(owner,env,nowSeconds));
+        200,data.background===true?[]:renewedOwnerCookies(owner,env,nowSeconds));
     }
     if(data.action==='decide'&&typeof data.id==='string'&&idPattern.test(data.id)&&['approved','declined'].includes(data.decision)||
       data.action==='subscribe'&&data.subscription&&typeof data.subscription==='object'||

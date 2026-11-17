@@ -2,11 +2,16 @@
 
 import {useEffect,useRef,useState} from 'react';
 import type {FormEvent} from 'react';
+import ApprovalBanner from './ApprovalBanner';
 import styles from './owner.module.css';
 
 type AccessRequest={id:string;name:string;email:string;createdAt:string};
+type Decision='approved'|'declined';
+type Notice={request:AccessRequest;autoOpen?:boolean};
 const requestIdPattern=/^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/;
 const requestTime=new Intl.DateTimeFormat(undefined,{month:'short',day:'numeric',hour:'numeric',minute:'2-digit'});
+const refreshInterval=12000;
+const dismissedKey='predictir:approval-banner-dismissals';
 
 function post(path:string,body:unknown){
   return fetch('/api/access/manage'+path,{method:'POST',credentials:'same-origin',cache:'no-store',
@@ -17,7 +22,7 @@ function pushSupported(){
   return 'serviceWorker' in navigator&&'PushManager' in window&&'Notification' in window;
 }
 
-export default function OwnerAccess(){
+export default function OwnerAccess({notificationOnly=false}:{notificationOnly?:boolean}){
   const [state,setState]=useState<'loading'|'locked'|'ready'|'unavailable'>('loading');
   const [requests,setRequests]=useState<AccessRequest[]>([]);
   const [publicKey,setPublicKey]=useState('');
@@ -26,60 +31,118 @@ export default function OwnerAccess(){
   const [busy,setBusy]=useState(false);
   const [deciding,setDeciding]=useState('');
   const [selectedRequest,setSelectedRequest]=useState('');
+  const [notice,setNotice]=useState<Notice|null>(null);
   const selectedCard=useRef<HTMLElement|null>(null);
   const submission=useRef(false);
+  const decisionInFlight=useRef(false);
+  const dismissals=useRef(new Set<string>());
+  const pendingFocus=useRef('');
+  const confirmingNotice=useRef('');
   const refreshVersion=useRef(0);
+  const ownerChannel=useRef<BroadcastChannel|null>(null);
   const registration=useRef<ServiceWorkerRegistration|null>(null);
   const currentSubscription=useRef<PushSubscription|null>(null);
 
-  async function refresh(){
+  function showNotice(list:AccessRequest[],target?:string){
+    setNotice(current=>{
+      if(current?.request.id===confirmingNotice.current)return current;
+      const selected=list.find(item=>item.id===target);
+      if(selected)return {request:selected,autoOpen:true};
+      if(current&&list.some(item=>item.id===current.request.id))return current;
+      const next=list.find(item=>!dismissals.current.has(item.id));
+      return next?{request:next}:null;
+    });
+  }
+
+  function lock(){
+    refreshVersion.current++;
+    setRequests([]);
+    setNotice(null);
+    setState('locked');
+  }
+
+  async function refresh(background=false){
     const version=++refreshVersion.current;
     try{
-      const result=await post('',{action:'list'});
+      const result=await post('',{action:'list',background});
       if(version!==refreshVersion.current)return;
-      if(result.status===401){setRequests([]);setState('locked');return;}
+      if(result.status===401||result.status===403||result.status===404){lock();return;}
       if(!result.ok)throw new Error();
       const data=await result.json();
       if(version!==refreshVersion.current)return;
+      showNotice(data.requests,pendingFocus.current);
+      pendingFocus.current='';
       setRequests(data.requests);
       setPublicKey(data.vapidPublicKey||'');
       setState('ready');
     }catch{
-      if(version!==refreshVersion.current)return;
+      if(version!==refreshVersion.current||background)return;
       setState(previous=>previous==='ready'?'ready':'unavailable');
       setMessage('The request queue is unavailable. Try again.');
     }
   }
 
   useEffect(()=>{
+    try{
+      const saved=JSON.parse(sessionStorage.getItem(dismissedKey)||'[]');
+      if(Array.isArray(saved))dismissals.current=new Set(saved.slice(-336).filter(
+        id=>typeof id==='string'&&requestIdPattern.test(id)));
+    }catch{}
     const reopen=()=>{if(document.visibilityState==='visible')void refresh();};
     const notification=(event:MessageEvent)=>{
-      if(event.data==='predictir-access-request'){void refresh();return;}
+      if(event.data==='predictir-access-request'||event.data?.type==='predictir-access-pending'){
+        if(document.visibilityState==='visible')void refresh(true);
+        return;
+      }
       if(event.data?.type!=='predictir-access-request')return;
       const id=event.data.requestId;
-      if(typeof id==='string'&&requestIdPattern.test(id))setSelectedRequest(id);
+      if(typeof id==='string'&&requestIdPattern.test(id)){
+        setSelectedRequest(id);
+        pendingFocus.current=id;
+      }
       void refresh();
     };
-    const ids=new URLSearchParams(window.location.search).getAll('request');
-    if(ids.length===1&&requestIdPattern.test(ids[0]))setSelectedRequest(ids[0]);
+    if(!notificationOnly){
+      const ids=new URLSearchParams(window.location.search).getAll('request');
+      if(ids.length===1&&requestIdPattern.test(ids[0])){
+        setSelectedRequest(ids[0]);
+        pendingFocus.current=ids[0];
+      }
+    }
+    if(typeof BroadcastChannel==='function'){
+      try{
+        const channel=new BroadcastChannel('predictir-owner-access');
+        channel.onmessage=event=>{if(event.data==='signed-out')lock();};
+        ownerChannel.current=channel;
+      }catch{}
+    }
     void refresh();
     document.addEventListener('visibilitychange',reopen);
     navigator.serviceWorker?.addEventListener('message',notification);
     return ()=>{
       refreshVersion.current++;
+      ownerChannel.current?.close();
+      ownerChannel.current=null;
       document.removeEventListener('visibilitychange',reopen);
       navigator.serviceWorker?.removeEventListener('message',notification);
     };
-  },[]);
+  },[notificationOnly]);
+  useEffect(()=>{
+    if(state!=='ready'&&state!=='unavailable')return;
+    const timer=window.setInterval(()=>{
+      if(document.visibilityState==='visible'&&!decisionInFlight.current)void refresh(true);
+    },refreshInterval);
+    return ()=>window.clearInterval(timer);
+  },[state]);
   const selectedPending=state==='ready'&&requests.some(item=>item.id===selectedRequest);
   useEffect(()=>{
-    if(!selectedPending)return;
+    if(!selectedPending||notice?.autoOpen)return;
     selectedCard.current?.scrollIntoView({block:'center'});
     selectedCard.current?.focus({preventScroll:true});
-  },[selectedPending,selectedRequest]);
+  },[selectedPending,selectedRequest,notice?.autoOpen]);
 
   useEffect(()=>{
-    if(state!=='ready'||!publicKey||!pushSupported())return;
+    if(notificationOnly||state!=='ready'||!publicKey||!pushSupported())return;
     let active=true;
     void navigator.serviceWorker.register('/access/push.js',{scope:'/access/'})
       .then(()=>navigator.serviceWorker.ready).then(async worker=>{
@@ -90,7 +153,7 @@ export default function OwnerAccess(){
         setPushState(subscription?'on':'off');
       }).catch(()=>{});
     return ()=>{active=false;};
-  },[state,publicKey]);
+  },[state,publicKey,notificationOnly]);
 
   async function signIn(event:FormEvent<HTMLFormElement>){
     event.preventDefault();
@@ -110,22 +173,44 @@ export default function OwnerAccess(){
     finally{submission.current=false;setBusy(false);}
   }
 
-  async function decide(id:string,decision:'approved'|'declined'){
-    if(deciding)return;
+  async function decide(id:string,decision:Decision,fromNotice=false):Promise<Decision|'expired'>{
+    if(decisionInFlight.current)throw new Error('Another decision is being saved.');
+    decisionInFlight.current=true;
+    if(fromNotice)confirmingNotice.current=id;
     setDeciding(id);
     setMessage('');
     try{
       const result=await post('',{action:'decide',id,decision});
-      if(result.status===401||result.status===409||result.status===404){await refresh();return;}
-      if(!result.ok)throw new Error();
-      const {status}=await result.json();
+      if(result.status===401){lock();throw new Error('Sign in to review this request.');}
+      if(!result.ok&&result.status!==404&&result.status!==409)throw new Error();
+      const data=result.ok?await result.json():{status:'missing'};
+      const status=data.status==='missing'?'expired':data.status;
+      if(status!=='approved'&&status!=='declined'&&status!=='expired')throw new Error();
       refreshVersion.current++;
       setRequests(items=>items.filter(item=>item.id!==id));
+      if(!fromNotice)setNotice(current=>current?.request.id===id?null:current);
       setSelectedRequest(previous=>previous===id?'':previous);
       setMessage(status==='approved'?'Approved. The visitor can now open Predictir.':
         status==='declined'?'Request declined.':'This request has expired.');
-    }catch{setMessage('The decision could not be saved. Refresh the queue and try again.');}
-    finally{setDeciding('');}
+      return status;
+    }catch(error){
+      if(fromNotice)confirmingNotice.current='';
+      setMessage('The decision could not be saved. Refresh the queue and try again.');
+      throw error;
+    }finally{decisionInFlight.current=false;setDeciding('');}
+  }
+
+  function dismissNotice(id:string){
+    dismissals.current.add(id);
+    try{sessionStorage.setItem(dismissedKey,JSON.stringify([...dismissals.current].slice(-336)));}catch{}
+    const url=new URL(window.location.href);
+    if(!notificationOnly&&url.searchParams.get('request')===id){
+      url.searchParams.delete('request');
+      window.history.replaceState(window.history.state,'',url);
+    }
+    confirmingNotice.current='';
+    setNotice(current=>current?.request.id===id?null:current);
+    showNotice(requests);
   }
 
   async function changeNotifications(){
@@ -163,9 +248,8 @@ export default function OwnerAccess(){
     try{
       const result=await post('',{action:'sign-out'});
       if(!result.ok&&result.status!==401)throw new Error();
-      refreshVersion.current++;
-      setRequests([]);
-      setState('locked');
+      lock();
+      ownerChannel.current?.postMessage('signed-out');
     }catch{setMessage('Could not sign out. Try again.');}
   }
 
@@ -176,7 +260,11 @@ export default function OwnerAccess(){
     }catch{setMessage('Could not copy. Select the email and copy it manually.');}
   }
 
-  return <main className={styles.shell}>
+  const alert=state==='ready'&&notice?<ApprovalBanner key={notice.request.id} request={notice.request}
+    autoOpen={notice.autoOpen} onDismiss={()=>dismissNotice(notice.request.id)}
+    onDecision={(id,decision)=>decide(id,decision,true)}/>:null;
+  if(notificationOnly)return alert;
+  return <><main className={styles.shell}>
     <section className={styles.card} aria-labelledby="owner-title">
       <a href="/access" className={styles.brand}>Predictir</a>
       <h1 id="owner-title">Access requests</h1>
@@ -219,9 +307,9 @@ export default function OwnerAccess(){
                 </div>
                 <footer className={styles.decisions}>
                   <button type="button" className={styles.approve} disabled={Boolean(deciding)}
-                    aria-label={'Approve '+item.name} onClick={()=>void decide(item.id,'approved')}>Approve</button>
+                    aria-label={'Approve '+item.name} onClick={()=>void decide(item.id,'approved').catch(()=>{})}>Approve</button>
                   <button type="button" className={styles.decline} disabled={Boolean(deciding)}
-                    aria-label={'Decline '+item.name} onClick={()=>void decide(item.id,'declined')}>Decline</button>
+                    aria-label={'Decline '+item.name} onClick={()=>void decide(item.id,'declined').catch(()=>{})}>Decline</button>
                 </footer>
               </article>
             </li>;
@@ -230,5 +318,5 @@ export default function OwnerAccess(){
       </>}
       <p role="status" aria-live="polite">{message}</p>
     </section>
-  </main>;
+  </main>{alert}</>;
 }

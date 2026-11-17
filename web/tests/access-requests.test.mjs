@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {createHash,createHmac,randomBytes} from 'node:crypto';
-import {handleAccessRequest} from '../lib/access-requests.mjs';
+import {handleAccessRequest,hasAccessOwnerSession} from '../lib/access-requests.mjs';
 import {publicAccessPath,SHARE_COOKIE,SHARE_COOKIE_SECONDS,shareCookieAuthorized} from '../lib/private-access.mjs';
 import {BROWSER_IDLE_SECONDS,BROWSER_MAX_SECONDS} from '../lib/browser-session.mjs';
 
@@ -111,10 +111,16 @@ test('owner activity renews the same browser within a fixed ceiling and code cha
   const signed=await call('manage/sign-in',{code:ownerCode},{options:{now:start,fetcher}});
   let owner=cookiePair(signed.headers,name);
   assert.match(signed.headers.getSetCookie()[0],/HttpOnly; SameSite=Strict; Max-Age=2592000$/);
+  assert.equal(hasAccessOwnerSession(new Headers({Cookie:owner}),env,start),true);
+  assert.equal(hasAccessOwnerSession(new Headers({Cookie:owner+'x'}),env,start),false);
+  assert.equal(hasAccessOwnerSession(new Headers({Cookie:owner}),env,start+30*day),false);
   assert.equal((await list('',start)).status,401);
   assert.equal((await list(owner+'x',start)).status,401);
   assert.deepEqual((await list(owner,start+1000)).headers.getSetCookie(),[]);
   assert.equal((await list(owner,start+BROWSER_IDLE_SECONDS*1000)).status,401);
+  const passive=await call('manage',{action:'list',background:true},{cookie:owner,options:{now:start+20*day,fetcher}});
+  assert.equal(passive.status,200);
+  assert.deepEqual(passive.headers.getSetCookie(),[]);
   const decision=await call('manage',{action:'decide',id:'00000000-0000-4000-8000-000000000001',decision:'approved'},
     {cookie:owner,options:{now:start+20*day,fetcher:async()=>Response.json({status:'approved'})}});
   assert.equal(decision.status,200);
