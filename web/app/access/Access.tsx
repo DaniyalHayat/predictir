@@ -197,7 +197,7 @@ export default function Access({requestsEnabled=false,challengeSiteKey=null,goog
       </form>}
       {googleEnabled&&screen==='link'&&<GoogleAccessLink/>}
       {screen==='pending'&&<p className="preview-help">You can close this page and return here in the same browser.</p>}
-      {screen!=='checking'&&<a className="preview-privacy" href="/privacy">Privacy</a>}
+      <a className="preview-privacy" href="/privacy">Privacy</a>
     </section>
   </main>;
 }

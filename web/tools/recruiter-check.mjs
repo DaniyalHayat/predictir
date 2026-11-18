@@ -219,6 +219,21 @@ async function verifyPublicGate(browser, { publicUrl, requestForm }) {
       });
       assert.equal(response.status(), 401);
       assert.match(response.headers()['content-type'] || '', /application\/json/i);
+      await check('public privacy notice and script policy', async () => {
+        const link = page.getByRole('link', { name: 'Privacy', exact: true });
+        assert.equal(await link.getAttribute('href'), '/privacy');
+        const privacyURL = new URL('/privacy', publicUrl).href;
+        const privacy = await page.goto(privacyURL, { waitUntil: 'domcontentloaded', timeout: TIMEOUT });
+        assert.equal(privacy?.status(), 200);
+        assert.equal(page.url(), privacyURL);
+        await page.getByRole('heading', { name: 'Privacy', exact: true }).waitFor({ timeout: TIMEOUT });
+        const nonce = privacy.headers()['content-security-policy']?.match(/'nonce-([^']+)'/)?.[1];
+        assert.ok(nonce);
+        const scriptNonces = await page.locator('script').evaluateAll(scripts => scripts.filter(script =>
+          script.src ? script.src.startsWith(location.origin + '/_next/') : script.textContent.includes('__next_f')
+        ).map(script => script.nonce));
+        assert.ok(scriptNonces.length > 0 && scriptNonces.every(value => value === nonce));
+      });
       return { entry_ms: entryMs };
     });
   } finally {
