@@ -178,7 +178,7 @@ export function createResearchServer({tickerScope,modelScope='baseline',executio
     const started=performance.now();
     const research=await deps.workspaceResearch(ticker,{assistant:true,model:modelScope,
       ...(/^KXNBAGAME-/.test(ticker)&&include_reporting?{refreshAvailability:true}:{})}),packet=publicResearch(research);
-    if(!include_reporting||research.market?.ticker!==ticker||(Object.keys(dependencies).length&&!dependencies.contractEvidence))return packet;
+    if(!include_reporting||research.market?.ticker!==ticker||(dependencies.workspaceResearch&&!dependencies.contractEvidence))return packet;
     const remaining=OPTIONAL_READBACK_MS-(performance.now()-started);
     const evidence=await readOptionalSource(()=>deps.contractEvidence(research.market,{enabled:true,selectedTicker:ticker,
       redditEnabled:false,includeX:false,headlineMode:'full',sports:research.extensions?.sports,

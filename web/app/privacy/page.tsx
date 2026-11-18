@@ -1,6 +1,7 @@
 import type {Metadata} from 'next';
 import '../access/preview.css';
 
+export const dynamic='force-dynamic';
 export const metadata:Metadata={title:'Predictir | Privacy',robots:{index:false,follow:false}};
 
 export default function PrivacyPage(){

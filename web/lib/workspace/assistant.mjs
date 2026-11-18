@@ -197,7 +197,7 @@ export function parseAssistantInput(value){
   const model=value?.model||'baseline';if(!['baseline','validated','challenger'].includes(model))throw new RangeError('Unknown research model');
   if(!Array.isArray(value.messages)||value.messages.length<1||value.messages.length>8)throw new RangeError('Send one to eight chat messages');
   const messages=value.messages.map(row=>{
-    if(!['user','assistant'].includes(row.role)||typeof row.content!=='string'||row.content.length>2000)throw new RangeError('Chat messages must be short text');
+    if(!row||typeof row!=='object'||!['user','assistant'].includes(row.role)||typeof row.content!=='string'||row.content.length>2000)throw new RangeError('Chat messages must be short text');
     return {role:row.role,content:row.content};
   });
   if(messages.at(-1).role!=='user'||Buffer.byteLength(JSON.stringify(messages))>16000)throw new RangeError('Chat context exceeds the limit');
@@ -352,8 +352,9 @@ export async function assistantResponse(request,{createClient,generate=streamTex
     const {ticker,messages,model:researchModel,executionControls,panel,detail}=input,backend=env.MARKET_BACKEND_URL,secret=env.ASSISTANT_SERVICE_SECRET;
     if(!backend||!secret)return Response.json({error:'The research assistant is not connected yet. Market research remains available.'},{status:503});
     const address=new URL(backend);if(address.protocol!=='https:'&&!['localhost','127.0.0.1'].includes(address.hostname))throw new Error('The backend address is invalid');
-    const ip=request.headers.get('x-vercel-forwarded-for')?.split(',')[0]?.trim()||'unknown';
-    const fingerprint=createHash('sha256').update(secret+new Date().toISOString().slice(0,10)+ip).digest('hex');
+    const forwarded=env.VERCEL==='1'?request.headers.get('x-vercel-forwarded-for')?.split(',')[0]?.trim():null;
+    const trustedIp=isIP(forwarded||'')?forwarded:null;
+    const fingerprint=createHash('sha256').update(secret+new Date().toISOString().slice(0,10)+(trustedIp||'unknown')).digest('hex');
     const headers={Authorization:'Bearer '+secret,'Content-Type':'application/json'};
     const question=scopedQuestion(messages);
     const contractIntent=/^(?:explain the research view|why this research view|why did (?:you|u) (?:pick|choose|recommend)|what would change this view|which source matters for settlement)/i.test(question);
@@ -364,7 +365,6 @@ export async function assistantResponse(request,{createClient,generate=streamTex
     const automaticAnalysis=panel==='analysis'&&messages.length===1&&
       question===assistantContext('analysis',ticker,{detail}).question;
     const country=env.VERCEL==='1'?request.headers.get('x-vercel-ip-country'):'US';
-    const trustedIp=env.VERCEL==='1'&&isIP(ip)?ip:null;
     const loopback=['localhost','127.0.0.1'].includes(address.hostname);
     if(!createClient&&(automaticAnalysis||guided)&&env.MARKET_EDGE_SECRET&&(trustedIp||loopback)){
       const scope={ticker,model:researchModel,executionControls,panel,detail,question};

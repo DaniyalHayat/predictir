@@ -150,8 +150,9 @@ function Research({value,loading,onAssistant,onPaper,onModelEvidence,history,now
   const path=<PricePath signal={history?.market_signal} now={now}/>;
   if(compact)return <>{opinion}{paper}{path}</>;
   const diagnostic=value.settlement_diagnostic;
+  const validationLink=diagnostic?.validation_url==='/research/settlement-calibration.json'?diagnostic.validation_url:null;
   return <div className="research-content"><div className="readout-heading"><div><span className="eyebrow">Contract analysis</span><h3>The research brief</h3></div><ReadMode value={readMode} onChange={setReadMode} label="Contract analysis reading length"/></div>{opinion}
-    {paper}{path}{!stale&&diagnostic?.available&&<details className="method"><summary>Settlement calibration experiment · {percent(diagnostic.probability)} YES</summary><p>Uses the exchange midpoint as its input. On {diagnostic.validation.overall.n} held-out events, the calibrated model scored {diagnostic.validation.overall.challenger_brier.toFixed(4)} Brier versus {diagnostic.validation.overall.midpoint_brier.toFixed(4)} for the midpoint. Lower is better. This estimate stays out of paper sizing.</p><p>{diagnostic.category_coverage.holdout_n} held-out events in this category. <a href={diagnostic.validation_url} target="_blank" rel="noreferrer">View validation data</a></p></details>}
+    {paper}{path}{!stale&&diagnostic?.available&&<details className="method"><summary>Settlement calibration experiment · {percent(diagnostic.probability)} YES</summary><p>Uses the exchange midpoint as its input. On {diagnostic.validation.overall.n} held-out events, the calibrated model scored {diagnostic.validation.overall.challenger_brier.toFixed(4)} Brier versus {diagnostic.validation.overall.midpoint_brier.toFixed(4)} for the midpoint. Lower is better. This estimate stays out of paper sizing.</p><p>{diagnostic.category_coverage.holdout_n} held-out events in this category. {validationLink&&<a href={validationLink} target="_blank" rel="noreferrer">View validation data</a>}</p></details>}
     <ResearchReading value={value} evidence={loadedEvidence} long={readMode==='long'} stale={stale}/>
     <div className="section-title"><h3>What matters here</h3></div><div className="driver-list">{value.drivers?.slice(0,readMode==='long'?12:3).map(driver=><div key={driver.name}><Check size={15}/><div><strong>{driver.name}</strong><p>{driver.detail}</p></div></div>)}</div>
     {readMode==='long'&&value.extensions?.sports&&<SportsResearch value={value.extensions.sports}/>}
@@ -184,14 +185,16 @@ function SportsResearch({value}) {
   </section>;
 }
 function MusicResearch({value}) {
+  const tracks=(value.apple?.tracks||[]).filter(track=>safeURL(track.url)).slice(0,8);
+  const references=(value.spotify?.references||[]).filter(row=>safeURL(row.url));
   return <section className="music-research"><div className="section-title"><h3>Chart evidence</h3><small>{value.scope||'Source-specific'}</small></div>
     {value.comparability&&<p className="notice">{value.comparability}</p>}
     {value.apple?.error&&<p className="notice">Apple chart retrieval is unavailable: {value.apple.error}</p>}
-    <div className="chart-tracks">{value.apple?.tracks?.slice(0,8).map(track=><a key={track.id} href={track.url} target="_blank" rel="noreferrer"><span className="rank">{track.rank}</span>{track.artwork&&<img src={track.artwork} alt="" loading="lazy" width="36" height="36"/>}<span><strong>{track.name}</strong><small>{track.artist}</small></span><ArrowUpRight size={14}/></a>)}</div>
+    <div className="chart-tracks">{tracks.map(track=><a key={track.id} href={track.url} target="_blank" rel="noreferrer"><span className="rank">{track.rank}</span>{safeURL(track.artwork)&&<img src={track.artwork} alt="" loading="lazy" width="36" height="36"/>}<span><strong>{track.name}</strong><small>{track.artist}</small></span><ArrowUpRight size={14}/></a>)}</div>
     {value.forecast&&<p className="notice">{value.forecast.reason||`Estimated persistence: ${percent(value.forecast.probability)}`}</p>}
     {value.apple?.source_updated&&<p className="footnote">Apple feed updated {dateLabel(value.apple.source_updated)}. {value.apple.note}</p>}
     {value.spotify?.status&&value.spotify.status!=='available'&&<p className="footnote">Spotify catalog-reference status: {value.spotify.status.replaceAll('_',' ')}. {value.spotify.reason}</p>}
-    {value.spotify?.references?.length>0&&<><h4>Spotify references</h4><div className="source-list">{value.spotify.references.map(row=><a className="source-row" key={row.id} href={row.url} target="_blank" rel="noreferrer"><span><strong>{row.name}</strong><small>{row.artists?.join(', ')||'Spotify artist reference'}</small></span><ArrowUpRight size={15}/></a>)}</div><p className="footnote">Spotify catalog references are displayed separately and are not sent to the assistant or forecasting models.</p></>}
+    {references.length>0&&<><h4>Spotify references</h4><div className="source-list">{references.map(row=><a className="source-row" key={row.id} href={row.url} target="_blank" rel="noreferrer"><span><strong>{row.name}</strong><small>{row.artists?.join(', ')||'Spotify artist reference'}</small></span><ArrowUpRight size={15}/></a>)}</div><p className="footnote">Spotify catalog references are displayed separately and are not sent to the assistant or forecasting models.</p></>}
   </section>;
 }
 function MarketAttribution({value}) {
