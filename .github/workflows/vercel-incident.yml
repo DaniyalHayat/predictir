@@ -1,0 +1,37 @@
+name: Investigate Vercel incident
+on:
+  repository_dispatch:
+    types: [vercel_incident]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: vercel-incident-${{ github.event.client_payload.deployment_id || github.run_id }}
+  cancel-in-progress: false
+
+jobs:
+  investigate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Record incident
+        env:
+          EVENT_TYPE: ${{ github.event.client_payload.event_type }}
+          DEPLOYMENT_ID: ${{ github.event.client_payload.deployment_id }}
+          DEPLOYMENT_URL: ${{ github.event.client_payload.deployment_url }}
+        run: |
+          {
+            echo "## Vercel incident"
+            echo "- Event: ${EVENT_TYPE:-manual}"
+            echo "- Deployment ID: ${DEPLOYMENT_ID:-manual}"
+            echo "- Deployment details: ${DEPLOYMENT_URL:-https://vercel.com/dashboard}"
+            echo "- Diagnosis: pending human/Codex review"
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: Health check production
+        run: |
+          curl --fail --location --show-error --max-time 20 --retry 2 https://predictir.dev/healthz
+      - name: Next step
+        if: failure()
+        run: echo "::warning::Check Vercel build/runtime logs. Ask Codex to investigate this workflow run and propose a PR; no automatic deploy."
